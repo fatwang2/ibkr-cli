@@ -1,0 +1,1134 @@
+from __future__ import annotations
+
+import platform
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple
+
+import typer
+from rich.console import Console
+from rich.table import Table
+
+from ibkr_cli.config import (
+    CONFIG_FILE,
+    AppConfig,
+    ProfileConfig,
+    default_config,
+    get_profile,
+    load_config,
+    profile_to_dict,
+    save_config,
+)
+from ibkr_cli.ib_service import (
+    ApiConnectionResult,
+    cancel_open_order,
+    check_api_connection,
+    get_account_summary,
+    get_completed_orders,
+    get_executions,
+    get_historical_bars,
+    get_open_orders,
+    get_positions,
+    get_quote_snapshot,
+    preview_stock_order,
+    submit_stock_order,
+    watch_quote,
+)
+from ibkr_cli.networking import ConnectionResult, test_tcp_connection
+
+console = Console()
+app = typer.Typer(no_args_is_help=True, help="A local-first CLI for Interactive Brokers.")
+profile_app = typer.Typer(no_args_is_help=True, help="Manage local connection profiles.")
+connect_app = typer.Typer(no_args_is_help=True, help="Connectivity checks for TWS or IB Gateway.")
+account_app = typer.Typer(no_args_is_help=True, help="Account-related read operations.")
+orders_app = typer.Typer(no_args_is_help=True, help="Order-related read operations.")
+app.add_typer(profile_app, name="profile")
+app.add_typer(connect_app, name="connect")
+app.add_typer(account_app, name="account")
+app.add_typer(orders_app, name="orders")
+
+EXIT_CODE_GENERAL = 1
+EXIT_CODE_USAGE = 2
+EXIT_CODE_CONFIG = 3
+EXIT_CODE_CONNECTIVITY = 4
+EXIT_CODE_API = 5
+
+ERROR_COMMAND_FAILED = "command_failed"
+ERROR_INVALID_ARGUMENTS = "invalid_arguments"
+ERROR_CONFIG_LOAD_FAILED = "config_load_failed"
+ERROR_CONFIG_ALREADY_EXISTS = "config_already_exists"
+ERROR_UNKNOWN_PROFILE = "unknown_profile"
+ERROR_CONNECTIVITY_CHECK_FAILED = "connectivity_check_failed"
+ERROR_ACCOUNT_QUERY_FAILED = "account_query_failed"
+ERROR_ORDER_QUERY_FAILED = "order_query_failed"
+ERROR_ORDER_OPERATION_FAILED = "order_operation_failed"
+ERROR_MARKET_DATA_REQUEST_FAILED = "market_data_request_failed"
+
+
+def package_version() -> str:
+    try:
+        return version("ibkr-cli")
+    except PackageNotFoundError:
+        return "0.1.0"
+
+
+def version_callback(value: bool) -> None:
+    if value:
+        console.print(package_version())
+        raise typer.Exit()
+
+
+@app.callback()
+def main(
+    version_flag: bool = typer.Option(
+        False,
+        "--version",
+        callback=version_callback,
+        is_eager=True,
+        help="Show the version and exit.",
+    ),
+) -> None:
+    return None
+
+
+def build_error_payload(
+    message: str,
+    error_code: str,
+    exit_code: int,
+    details: Optional[Dict[str, object]] = None,
+) -> Dict[str, object]:
+    payload: Dict[str, object] = {
+        "ok": False,
+        "error": {
+            "code": error_code,
+            "message": message,
+            "exit_code": exit_code,
+        },
+    }
+    if details:
+        payload["error"]["details"] = details
+    return payload
+
+
+def exit_with_error(
+    message: str,
+    code: str = ERROR_COMMAND_FAILED,
+    exit_code: int = EXIT_CODE_GENERAL,
+    json_output: bool = False,
+    details: Optional[Dict[str, object]] = None,
+) -> None:
+    if json_output:
+        print_json(build_error_payload(message, code, exit_code, details))
+    else:
+        console.print(f"[red]{message}[/red]")
+    raise typer.Exit(code=exit_code)
+
+
+def load_or_exit(json_output: bool = False) -> Tuple[AppConfig, bool]:
+    try:
+        return load_config()
+    except Exception as exc:
+        exit_with_error(
+            f"Failed to load config: {exc}",
+            code=ERROR_CONFIG_LOAD_FAILED,
+            exit_code=EXIT_CODE_CONFIG,
+            json_output=json_output,
+            details={"config_file": str(CONFIG_FILE)},
+        )
+
+
+def resolve_profile_or_exit(profile: Optional[str], json_output: bool = False) -> Tuple[AppConfig, bool, str, ProfileConfig]:
+    config, exists = load_or_exit(json_output=json_output)
+    try:
+        selected_name, selected_profile = get_profile(config, profile)
+    except KeyError:
+        available = ", ".join(sorted(config.profiles))
+        exit_with_error(
+            f"Unknown profile '{profile}'. Available profiles: {available}",
+            code=ERROR_UNKNOWN_PROFILE,
+            exit_code=EXIT_CODE_CONFIG,
+            json_output=json_output,
+            details={
+                "requested_profile": profile,
+                "available_profiles": sorted(config.profiles),
+            },
+        )
+    return config, exists, selected_name, selected_profile
+
+
+def render_profiles_table(config: AppConfig) -> Table:
+    table = Table(title="Profiles")
+    table.add_column("Name", style="cyan")
+    table.add_column("Mode")
+    table.add_column("Host")
+    table.add_column("Port", justify="right")
+    table.add_column("Client ID", justify="right")
+    table.add_column("Default")
+    for name in sorted(config.profiles):
+        profile = config.profiles[name]
+        table.add_row(
+            name,
+            profile.mode,
+            profile.host,
+            str(profile.port),
+            str(profile.client_id),
+            "yes" if name == config.default_profile else "",
+        )
+    return table
+
+
+def render_profile_detail(name: str, profile: ProfileConfig, is_default: bool) -> Table:
+    table = Table(title=f"Profile: {name}")
+    table.add_column("Field", style="cyan")
+    table.add_column("Value")
+    table.add_row("name", name)
+    table.add_row("mode", profile.mode)
+    table.add_row("host", profile.host)
+    table.add_row("port", str(profile.port))
+    table.add_row("client_id", str(profile.client_id))
+    table.add_row("default", "yes" if is_default else "no")
+    return table
+
+
+def render_connection_result(result: ConnectionResult) -> Table:
+    table = Table(title="TCP Connectivity")
+    table.add_column("Field", style="cyan")
+    table.add_column("Value")
+    table.add_row("host", result.host)
+    table.add_row("port", str(result.port))
+    table.add_row("timeout", str(result.timeout))
+    table.add_row("reachable", "yes" if result.ok else "no")
+    table.add_row("latency_ms", "-" if result.latency_ms is None else str(result.latency_ms))
+    table.add_row("error", result.error or "")
+    return table
+
+
+def render_api_connection_result(result: ApiConnectionResult) -> Table:
+    table = Table(title="IBKR API Connectivity")
+    table.add_column("Field", style="cyan")
+    table.add_column("Value")
+    table.add_row("host", result.host)
+    table.add_row("port", str(result.port))
+    table.add_row("client_id", str(result.client_id))
+    table.add_row("timeout", str(result.timeout))
+    table.add_row("reachable", "yes" if result.ok else "no")
+    table.add_row("latency_ms", "-" if result.latency_ms is None else str(result.latency_ms))
+    table.add_row("server_version", "-" if result.server_version is None else str(result.server_version))
+    table.add_row("managed_accounts", ", ".join(result.managed_accounts))
+    table.add_row("error", result.error or "")
+    return table
+
+
+def render_account_summary_table(rows: Sequence[Dict[str, object]], account: str) -> Table:
+    table = Table(title=f"Account Summary: {account}")
+    table.add_column("Tag", style="cyan")
+    table.add_column("Value", justify="right")
+    table.add_column("Currency")
+    for row in rows:
+        table.add_row(str(row["tag"]), str(row["value"]), str(row["currency"]))
+    return table
+
+
+def render_positions_table(rows: Sequence[Dict[str, object]], account: Optional[str]) -> Table:
+    table = Table(title=f"Positions: {account}" if account else "Positions")
+    table.add_column("Account", style="cyan")
+    table.add_column("Symbol")
+    table.add_column("Local Symbol")
+    table.add_column("Type")
+    table.add_column("Exchange")
+    table.add_column("Currency")
+    table.add_column("Position", justify="right")
+    table.add_column("Avg Cost", justify="right")
+    for row in rows:
+        table.add_row(
+            str(row["account"]),
+            str(row["symbol"]),
+            str(row["local_symbol"]),
+            str(row["sec_type"]),
+            str(row["exchange"]),
+            str(row["currency"]),
+            str(row["position"]),
+            str(row["avg_cost"]),
+        )
+    return table
+
+
+def render_open_orders_table(rows: Sequence[Dict[str, object]], account: Optional[str]) -> Table:
+    table = Table(title=f"Open Orders: {account}" if account else "Open Orders")
+    table.add_column("Account", style="cyan")
+    table.add_column("Order ID", justify="right")
+    table.add_column("Symbol")
+    table.add_column("Type")
+    table.add_column("Action")
+    table.add_column("Qty", justify="right")
+    table.add_column("Limit", justify="right")
+    table.add_column("Status")
+    table.add_column("Filled", justify="right")
+    table.add_column("Remaining", justify="right")
+    for row in rows:
+        table.add_row(
+            str(row["account"]),
+            str(row["order_id"]),
+            str(row["symbol"]),
+            str(row["order_type"]),
+            str(row["action"]),
+            "" if row["quantity"] is None else str(row["quantity"]),
+            "" if row["limit_price"] is None else str(row["limit_price"]),
+            str(row["status"]),
+            "" if row["filled"] is None else str(row["filled"]),
+            "" if row["remaining"] is None else str(row["remaining"]),
+        )
+    return table
+
+
+def render_completed_orders_table(rows: Sequence[Dict[str, object]], account: Optional[str]) -> Table:
+    table = Table(title=f"Completed Orders: {account}" if account else "Completed Orders")
+    table.add_column("Account", style="cyan")
+    table.add_column("Order ID", justify="right")
+    table.add_column("Symbol")
+    table.add_column("Type")
+    table.add_column("Action")
+    table.add_column("Qty", justify="right")
+    table.add_column("Status")
+    table.add_column("Avg Fill", justify="right")
+    for row in rows:
+        table.add_row(
+            str(row["account"]),
+            str(row["order_id"]),
+            str(row["symbol"]),
+            str(row["order_type"]),
+            str(row["action"]),
+            "" if row["quantity"] is None else str(row["quantity"]),
+            str(row["status"]),
+            "" if row["avg_fill_price"] is None else str(row["avg_fill_price"]),
+        )
+    return table
+
+
+def render_executions_table(rows: Sequence[Dict[str, object]], account: Optional[str]) -> Table:
+    table = Table(title=f"Executions: {account}" if account else "Executions")
+    table.add_column("Account", style="cyan")
+    table.add_column("Time")
+    table.add_column("Exec ID")
+    table.add_column("Symbol")
+    table.add_column("Side")
+    table.add_column("Shares", justify="right")
+    table.add_column("Price", justify="right")
+    table.add_column("Commission", justify="right")
+    table.add_column("Realized PnL", justify="right")
+    for row in rows:
+        table.add_row(
+            str(row["account"]),
+            str(row["time"]),
+            str(row["exec_id"]),
+            str(row["symbol"]),
+            str(row["side"]),
+            "" if row["shares"] is None else str(row["shares"]),
+            "" if row["price"] is None else str(row["price"]),
+            "" if row["commission"] is None else str(row["commission"]),
+            "" if row["realized_pnl"] is None else str(row["realized_pnl"]),
+        )
+    return table
+
+
+def render_order_preview_table(payload: Dict[str, object]) -> Table:
+    table = Table(title=f"Order Preview: {payload['action']} {payload['symbol']}")
+    table.add_column("Field", style="cyan")
+    table.add_column("Value")
+    ordered_fields = (
+        "selected_account",
+        "symbol",
+        "local_symbol",
+        "exchange",
+        "primary_exchange",
+        "currency",
+        "sec_type",
+        "con_id",
+        "action",
+        "quantity",
+        "order_type",
+        "limit_price",
+        "tif",
+        "outside_rth",
+        "status",
+        "init_margin_before",
+        "init_margin_change",
+        "init_margin_after",
+        "maint_margin_before",
+        "maint_margin_change",
+        "maint_margin_after",
+        "equity_with_loan_before",
+        "equity_with_loan_change",
+        "equity_with_loan_after",
+        "commission",
+        "min_commission",
+        "max_commission",
+        "commission_currency",
+        "warning_text",
+        "raw_error_codes",
+    )
+    for field in ordered_fields:
+        table.add_row(field, "" if payload.get(field) is None else str(payload.get(field)))
+    return table
+
+
+def render_trade_result_table(payload: Dict[str, object]) -> Table:
+    table = Table(title=f"Order {payload['operation'].title()}: {payload['action']} {payload['symbol']}")
+    table.add_column("Field", style="cyan")
+    table.add_column("Value")
+    ordered_fields = (
+        "selected_account",
+        "symbol",
+        "local_symbol",
+        "exchange",
+        "primary_exchange",
+        "currency",
+        "sec_type",
+        "con_id",
+        "operation",
+        "action",
+        "quantity",
+        "order_type",
+        "limit_price",
+        "tif",
+        "outside_rth",
+        "order_id",
+        "perm_id",
+        "client_id",
+        "status",
+        "filled",
+        "remaining",
+        "avg_fill_price",
+        "is_active",
+        "is_done",
+        "advanced_error",
+        "raw_error_codes",
+    )
+    for field in ordered_fields:
+        table.add_row(field, "" if payload.get(field) is None else str(payload.get(field)))
+    return table
+
+
+def render_quote_table(payload: Dict[str, object]) -> Table:
+    table = Table(title=f"Quote: {payload['symbol']}")
+    table.add_column("Field", style="cyan")
+    table.add_column("Value")
+    ordered_fields = (
+        "symbol",
+        "local_symbol",
+        "exchange",
+        "primary_exchange",
+        "currency",
+        "sec_type",
+        "con_id",
+        "market_data_type",
+        "bid",
+        "bid_size",
+        "ask",
+        "ask_size",
+        "last",
+        "last_size",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "quote_source",
+    )
+    for field in ordered_fields:
+        table.add_row(field, "" if payload.get(field) is None else str(payload.get(field)))
+    if "requested_market_data_type" in payload:
+        table.add_row("requested_market_data_type", str(payload.get("requested_market_data_type")))
+        table.add_row("returned_market_data_type", str(payload.get("returned_market_data_type")))
+        table.add_row("fallback_applied", str(payload.get("fallback_applied")))
+        table.add_row("raw_error_codes", str(payload.get("raw_error_codes")))
+    return table
+
+
+def render_bars_table(payload: Dict[str, object]) -> Table:
+    table = Table(title=f"Bars: {payload['symbol']} ({payload['bar_size']}, {payload['duration']})")
+    table.add_column("Date", style="cyan")
+    table.add_column("Open", justify="right")
+    table.add_column("High", justify="right")
+    table.add_column("Low", justify="right")
+    table.add_column("Close", justify="right")
+    table.add_column("Volume", justify="right")
+    table.add_column("Average", justify="right")
+    table.add_column("Count", justify="right")
+    for row in payload["rows"]:
+        table.add_row(
+            str(row["date"]),
+            "" if row["open"] is None else str(row["open"]),
+            "" if row["high"] is None else str(row["high"]),
+            "" if row["low"] is None else str(row["low"]),
+            "" if row["close"] is None else str(row["close"]),
+            "" if row["volume"] is None else str(row["volume"]),
+            "" if row["average"] is None else str(row["average"]),
+            "" if row["bar_count"] is None else str(row["bar_count"]),
+        )
+    return table
+
+
+def render_quote_watch_table(payload: Dict[str, object]) -> Table:
+    table = Table(title=f"Quote Watch: {payload['symbol']} ({payload['row_count']} updates)")
+    table.add_column("Update", justify="right")
+    table.add_column("Observed At")
+    table.add_column("Source")
+    table.add_column("Bid", justify="right")
+    table.add_column("Ask", justify="right")
+    table.add_column("Last", justify="right")
+    table.add_column("Volume", justify="right")
+    for row in payload["rows"]:
+        table.add_row(
+            str(row["update_index"]),
+            "" if row.get("observed_at") is None else str(row["observed_at"]),
+            str(row["quote_source"]),
+            "" if row["bid"] is None else str(row["bid"]),
+            "" if row["ask"] is None else str(row["ask"]),
+            "" if row["last"] is None else str(row["last"]),
+            "" if row["volume"] is None else str(row["volume"]),
+        )
+    return table
+
+
+def print_json(payload: Dict[str, object]) -> None:
+    console.print_json(data=payload)
+
+
+@app.command()
+def doctor(
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to inspect."),
+    check_port: bool = typer.Option(True, "--check-port/--no-check-port", help="Check whether the configured port is reachable."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of tables."),
+) -> None:
+    config, exists, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
+    connection_result = None
+    if check_port:
+        connection_result = test_tcp_connection(selected_profile.host, selected_profile.port)
+
+    payload = {
+        "version": package_version(),
+        "python": platform.python_version(),
+        "config_file": str(CONFIG_FILE),
+        "config_exists": exists,
+        "default_profile": config.default_profile,
+        "selected_profile": profile_to_dict(
+            selected_name,
+            selected_profile,
+            is_default=selected_name == config.default_profile,
+        ),
+        "profiles": [
+            profile_to_dict(name, current, is_default=name == config.default_profile)
+            for name, current in sorted(config.profiles.items())
+        ],
+        "port_check": connection_result.to_dict() if connection_result else None,
+    }
+
+    if json_output:
+        print_json(payload)
+        return
+
+    table = Table(title="Doctor")
+    table.add_column("Field", style="cyan")
+    table.add_column("Value")
+    table.add_row("version", str(payload["version"]))
+    table.add_row("python", str(payload["python"]))
+    table.add_row("config_file", str(payload["config_file"]))
+    table.add_row("config_exists", "yes" if exists else "no")
+    table.add_row("default_profile", config.default_profile)
+    table.add_row("selected_profile", selected_name)
+    console.print(table)
+    console.print(render_profiles_table(config))
+    if connection_result:
+        console.print(render_connection_result(connection_result))
+
+
+@profile_app.command("init")
+def profile_init(
+    force: bool = typer.Option(False, "--force", help="Overwrite the config file if it already exists."),
+) -> None:
+    try:
+        target = save_config(default_config(), force=force)
+    except FileExistsError as exc:
+        exit_with_error(str(exc), code=ERROR_CONFIG_ALREADY_EXISTS, exit_code=EXIT_CODE_CONFIG)
+    console.print(f"[green]Created config:[/green] {target}")
+
+
+@profile_app.command("list")
+def profile_list(
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    config, exists = load_or_exit(json_output=json_output)
+    profiles = [
+        profile_to_dict(name, current, is_default=name == config.default_profile)
+        for name, current in sorted(config.profiles.items())
+    ]
+    if json_output:
+        print_json({"config_exists": exists, "config_file": str(CONFIG_FILE), "profiles": profiles})
+        return
+    console.print(render_profiles_table(config))
+    if not exists:
+        console.print(f"[yellow]Using in-memory defaults because {CONFIG_FILE} does not exist yet.[/yellow]")
+
+
+@profile_app.command("show")
+def profile_show(
+    name: Optional[str] = typer.Argument(None, help="Profile name. Defaults to the configured default profile."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    config, _, selected_name, selected_profile = resolve_profile_or_exit(name, json_output=json_output)
+    payload = profile_to_dict(selected_name, selected_profile, is_default=selected_name == config.default_profile)
+    if json_output:
+        print_json(payload)
+        return
+    console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
+
+
+@connect_app.command("test")
+def connect_test(
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to test."),
+    timeout: float = typer.Option(2.0, "--timeout", min=0.1, help="Socket timeout in seconds."),
+    tcp_check: bool = typer.Option(True, "--tcp/--no-tcp", help="Run a raw TCP port check."),
+    api_check: bool = typer.Option(True, "--api/--no-api", help="Run an IBKR API handshake check."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
+    if not tcp_check and not api_check:
+        exit_with_error(
+            "At least one of --tcp or --api must be enabled.",
+            code=ERROR_INVALID_ARGUMENTS,
+            exit_code=EXIT_CODE_USAGE,
+            json_output=json_output,
+            details={"tcp": tcp_check, "api": api_check},
+        )
+
+    tcp_result = test_tcp_connection(selected_profile.host, selected_profile.port, timeout=timeout) if tcp_check else None
+    api_result = check_api_connection(selected_profile, timeout=timeout) if api_check else None
+
+    payload = {
+        "profile": selected_name,
+        "tcp_connection": tcp_result.to_dict() if tcp_result else None,
+        "api_connection": api_result.to_dict() if api_result else None,
+    }
+    connectivity_failed = (tcp_result and not tcp_result.ok) or (api_result and not api_result.ok)
+    if json_output and not connectivity_failed:
+        print_json(payload)
+    elif json_output and connectivity_failed:
+        exit_with_error(
+            f"Connectivity checks failed for profile '{selected_name}'.",
+            code=ERROR_CONNECTIVITY_CHECK_FAILED,
+            exit_code=EXIT_CODE_CONNECTIVITY,
+            json_output=True,
+            details=payload,
+        )
+    else:
+        console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
+        if tcp_result:
+            console.print(render_connection_result(tcp_result))
+        if api_result:
+            console.print(render_api_connection_result(api_result))
+    if connectivity_failed:
+        raise typer.Exit(code=EXIT_CODE_CONNECTIVITY)
+
+
+@app.command("config-path")
+def config_path() -> None:
+    console.print(str(Path(CONFIG_FILE)))
+
+
+@account_app.command("summary")
+def account_summary(
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
+    account: Optional[str] = typer.Option(None, "--account", help="IBKR account identifier."),
+    tag: Optional[List[str]] = typer.Option(None, "--tag", help="Limit output to one or more summary tags. Repeatable."),
+    timeout: float = typer.Option(4.0, "--timeout", min=0.1, help="API timeout in seconds."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
+    try:
+        payload = get_account_summary(
+            selected_profile,
+            timeout=timeout,
+            account=account,
+            tags=tag,
+        )
+    except Exception as exc:
+        exit_with_error(
+            f"Failed to fetch account summary via profile '{selected_name}': {exc}",
+            code=ERROR_ACCOUNT_QUERY_FAILED,
+            exit_code=EXIT_CODE_API,
+            json_output=json_output,
+            details={"profile": selected_name, "account": account, "tags": tag},
+        )
+        return
+
+    response = {
+        "profile": selected_name,
+        **payload,
+    }
+    if json_output:
+        print_json(response)
+        return
+
+    console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
+    console.print(render_account_summary_table(payload["rows"], str(payload["selected_account"])))
+
+
+@app.command()
+def positions(
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
+    account: Optional[str] = typer.Option(None, "--account", help="IBKR account identifier."),
+    timeout: float = typer.Option(4.0, "--timeout", min=0.1, help="API timeout in seconds."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
+    try:
+        payload = get_positions(selected_profile, timeout=timeout, account=account)
+    except Exception as exc:
+        exit_with_error(
+            f"Failed to fetch positions via profile '{selected_name}': {exc}",
+            code=ERROR_ACCOUNT_QUERY_FAILED,
+            exit_code=EXIT_CODE_API,
+            json_output=json_output,
+            details={"profile": selected_name, "account": account},
+        )
+        return
+
+    response = {
+        "profile": selected_name,
+        **payload,
+    }
+    if json_output:
+        print_json(response)
+        return
+
+    console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
+    console.print(render_positions_table(payload["rows"], account))
+
+
+@orders_app.command("open")
+def orders_open(
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
+    account: Optional[str] = typer.Option(None, "--account", help="IBKR account identifier."),
+    timeout: float = typer.Option(4.0, "--timeout", min=0.1, help="API timeout in seconds."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
+    try:
+        payload = get_open_orders(selected_profile, timeout=timeout, account=account)
+    except Exception as exc:
+        exit_with_error(
+            f"Failed to fetch open orders via profile '{selected_name}': {exc}",
+            code=ERROR_ORDER_QUERY_FAILED,
+            exit_code=EXIT_CODE_API,
+            json_output=json_output,
+            details={"profile": selected_name, "account": account},
+        )
+        return
+
+    response = {
+        "profile": selected_name,
+        **payload,
+    }
+    if json_output:
+        print_json(response)
+        return
+
+    console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
+    console.print(render_open_orders_table(payload["rows"], account))
+
+
+@orders_app.command("completed")
+def orders_completed(
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
+    account: Optional[str] = typer.Option(None, "--account", help="IBKR account identifier."),
+    api_only: bool = typer.Option(False, "--api-only", help="Only include API-originated orders."),
+    timeout: float = typer.Option(4.0, "--timeout", min=0.1, help="API timeout in seconds."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
+    try:
+        payload = get_completed_orders(
+            selected_profile,
+            timeout=timeout,
+            account=account,
+            api_only=api_only,
+        )
+    except Exception as exc:
+        exit_with_error(
+            f"Failed to fetch completed orders via profile '{selected_name}': {exc}",
+            code=ERROR_ORDER_QUERY_FAILED,
+            exit_code=EXIT_CODE_API,
+            json_output=json_output,
+            details={"profile": selected_name, "account": account, "api_only": api_only},
+        )
+        return
+
+    response = {
+        "profile": selected_name,
+        **payload,
+    }
+    if json_output:
+        print_json(response)
+        return
+
+    console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
+    console.print(render_completed_orders_table(payload["rows"], account))
+
+
+@orders_app.command("executions")
+def orders_executions(
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
+    account: Optional[str] = typer.Option(None, "--account", help="IBKR account identifier."),
+    timeout: float = typer.Option(4.0, "--timeout", min=0.1, help="API timeout in seconds."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
+    try:
+        payload = get_executions(selected_profile, timeout=timeout, account=account)
+    except Exception as exc:
+        exit_with_error(
+            f"Failed to fetch executions via profile '{selected_name}': {exc}",
+            code=ERROR_ORDER_QUERY_FAILED,
+            exit_code=EXIT_CODE_API,
+            json_output=json_output,
+            details={"profile": selected_name, "account": account},
+        )
+        return
+
+    response = {
+        "profile": selected_name,
+        **payload,
+    }
+    if json_output:
+        print_json(response)
+        return
+
+    console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
+    console.print(render_executions_table(payload["rows"], account))
+
+
+def execute_trade_command(
+    action: str,
+    symbol: str,
+    quantity: float,
+    profile: Optional[str],
+    exchange: str,
+    currency: str,
+    order_type: str,
+    limit_price: Optional[float],
+    tif: str,
+    outside_rth: bool,
+    preview: bool,
+    submit: bool,
+    account: Optional[str],
+    timeout: float,
+    json_output: bool,
+) -> None:
+    if preview == submit:
+        exit_with_error(
+            "Choose exactly one of --preview or --submit.",
+            code=ERROR_INVALID_ARGUMENTS,
+            exit_code=EXIT_CODE_USAGE,
+            json_output=json_output,
+            details={"preview": preview, "submit": submit},
+        )
+        return
+
+    config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
+    try:
+        if preview:
+            payload = preview_stock_order(
+                selected_profile,
+                action=action,
+                symbol=symbol,
+                quantity=quantity,
+                exchange=exchange,
+                currency=currency,
+                order_type=order_type,
+                limit_price=limit_price,
+                tif=tif,
+                outside_rth=outside_rth,
+                timeout=timeout,
+                account=account,
+            )
+        else:
+            payload = submit_stock_order(
+                selected_profile,
+                action=action,
+                symbol=symbol,
+                quantity=quantity,
+                exchange=exchange,
+                currency=currency,
+                order_type=order_type,
+                limit_price=limit_price,
+                tif=tif,
+                outside_rth=outside_rth,
+                timeout=timeout,
+                account=account,
+            )
+    except Exception as exc:
+        operation = "preview" if preview else "submit"
+        exit_with_error(
+            f"Failed to {operation} {action.lower()} order for '{symbol}' via profile '{selected_name}': {exc}",
+            code=ERROR_ORDER_OPERATION_FAILED,
+            exit_code=EXIT_CODE_API,
+            json_output=json_output,
+            details={
+                "profile": selected_name,
+                "operation": operation,
+                "action": action,
+                "symbol": symbol,
+                "quantity": quantity,
+                "order_type": order_type,
+                "account": account,
+            },
+        )
+        return
+
+    response = {
+        "profile": selected_name,
+        **payload,
+    }
+    if json_output:
+        print_json(response)
+        return
+
+    console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
+    if preview:
+        console.print(render_order_preview_table(payload))
+    else:
+        console.print(render_trade_result_table(payload))
+
+
+@app.command()
+def buy(
+    symbol: str = typer.Argument(..., help="Ticker symbol, for example AAPL."),
+    quantity: float = typer.Argument(..., help="Order quantity."),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
+    exchange: str = typer.Option("SMART", "--exchange", help="Exchange to use for contract qualification."),
+    currency: str = typer.Option("USD", "--currency", help="Currency to use for contract qualification."),
+    order_type: str = typer.Option("MKT", "--type", help="Order type: MKT or LMT."),
+    limit_price: Optional[float] = typer.Option(None, "--limit", help="Limit price for LMT orders."),
+    tif: str = typer.Option("DAY", "--tif", help="Time in force."),
+    outside_rth: bool = typer.Option(False, "--outside-rth", help="Allow execution outside regular trading hours."),
+    preview: bool = typer.Option(False, "--preview", help="Run a what-if preview instead of placing an order."),
+    submit: bool = typer.Option(False, "--submit", help="Place the order for real."),
+    account: Optional[str] = typer.Option(None, "--account", help="IBKR account identifier."),
+    timeout: float = typer.Option(4.0, "--timeout", min=0.1, help="API timeout in seconds."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    execute_trade_command(
+        "BUY",
+        symbol,
+        quantity,
+        profile,
+        exchange,
+        currency,
+        order_type,
+        limit_price,
+        tif,
+        outside_rth,
+        preview,
+        submit,
+        account,
+        timeout,
+        json_output,
+    )
+
+
+@app.command()
+def sell(
+    symbol: str = typer.Argument(..., help="Ticker symbol, for example AAPL."),
+    quantity: float = typer.Argument(..., help="Order quantity."),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
+    exchange: str = typer.Option("SMART", "--exchange", help="Exchange to use for contract qualification."),
+    currency: str = typer.Option("USD", "--currency", help="Currency to use for contract qualification."),
+    order_type: str = typer.Option("MKT", "--type", help="Order type: MKT or LMT."),
+    limit_price: Optional[float] = typer.Option(None, "--limit", help="Limit price for LMT orders."),
+    tif: str = typer.Option("DAY", "--tif", help="Time in force."),
+    outside_rth: bool = typer.Option(False, "--outside-rth", help="Allow execution outside regular trading hours."),
+    preview: bool = typer.Option(False, "--preview", help="Run a what-if preview instead of placing an order."),
+    submit: bool = typer.Option(False, "--submit", help="Place the order for real."),
+    account: Optional[str] = typer.Option(None, "--account", help="IBKR account identifier."),
+    timeout: float = typer.Option(4.0, "--timeout", min=0.1, help="API timeout in seconds."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    execute_trade_command(
+        "SELL",
+        symbol,
+        quantity,
+        profile,
+        exchange,
+        currency,
+        order_type,
+        limit_price,
+        tif,
+        outside_rth,
+        preview,
+        submit,
+        account,
+        timeout,
+        json_output,
+    )
+
+
+@orders_app.command("cancel")
+def orders_cancel(
+    order_id: int = typer.Argument(..., help="IBKR order ID to cancel."),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
+    account: Optional[str] = typer.Option(None, "--account", help="IBKR account identifier."),
+    timeout: float = typer.Option(4.0, "--timeout", min=0.1, help="API timeout in seconds."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
+    try:
+        payload = cancel_open_order(selected_profile, order_id=order_id, timeout=timeout, account=account)
+    except Exception as exc:
+        exit_with_error(
+            f"Failed to cancel order '{order_id}' via profile '{selected_name}': {exc}",
+            code=ERROR_ORDER_OPERATION_FAILED,
+            exit_code=EXIT_CODE_API,
+            json_output=json_output,
+            details={"profile": selected_name, "order_id": order_id, "account": account},
+        )
+        return
+
+    response = {
+        "profile": selected_name,
+        **payload,
+    }
+    if json_output:
+        print_json(response)
+        return
+
+    console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
+    console.print(render_trade_result_table(payload))
+
+
+@app.command()
+def quote(
+    symbol: str = typer.Argument(..., help="Ticker symbol, for example AAPL."),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
+    exchange: str = typer.Option("SMART", "--exchange", help="Exchange to use for contract qualification."),
+    currency: str = typer.Option("USD", "--currency", help="Currency to use for contract qualification."),
+    watch: bool = typer.Option(False, "--watch", help="Stream a finite number of quote updates."),
+    updates: int = typer.Option(5, "--updates", min=1, help="Number of updates to capture in watch mode."),
+    interval: float = typer.Option(2.0, "--interval", min=0.1, help="Seconds to wait between updates in watch mode."),
+    timeout: float = typer.Option(4.0, "--timeout", min=0.1, help="API timeout in seconds."),
+    debug_market_data: bool = typer.Option(False, "--debug-market-data", help="Include market data request diagnostics."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
+    try:
+        if watch:
+            payload = watch_quote(
+                selected_profile,
+                symbol=symbol,
+                exchange=exchange,
+                currency=currency,
+                updates=updates,
+                interval=interval,
+                timeout=timeout,
+            )
+        else:
+            payload = get_quote_snapshot(
+                selected_profile,
+                symbol=symbol,
+                exchange=exchange,
+                currency=currency,
+                timeout=timeout,
+                debug_market_data=debug_market_data,
+            )
+    except Exception as exc:
+        operation = "watch quote" if watch else "fetch quote"
+        exit_with_error(
+            f"Failed to {operation} for '{symbol}' via profile '{selected_name}': {exc}",
+            code=ERROR_MARKET_DATA_REQUEST_FAILED,
+            exit_code=EXIT_CODE_API,
+            json_output=json_output,
+            details={
+                "profile": selected_name,
+                "operation": "watch" if watch else "snapshot",
+                "symbol": symbol,
+                "exchange": exchange,
+                "currency": currency,
+            },
+        )
+        return
+
+    response = {
+        "profile": selected_name,
+        **payload,
+    }
+    if json_output:
+        print_json(response)
+        return
+
+    console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
+    if watch:
+        console.print(render_quote_watch_table(payload))
+    else:
+        console.print(render_quote_table(payload))
+
+
+@app.command("bars")
+def bars(
+    symbol: str = typer.Argument(..., help="Ticker symbol, for example AAPL."),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
+    exchange: str = typer.Option("SMART", "--exchange", help="Exchange to use for contract qualification."),
+    currency: str = typer.Option("USD", "--currency", help="Currency to use for contract qualification."),
+    end: str = typer.Option("", "--end", help="End timestamp, for example '20260317 16:00:00'. Empty means now."),
+    duration: str = typer.Option("1 D", "--duration", help="Historical duration, for example '1 D' or '2 W'."),
+    bar_size: str = typer.Option("5 mins", "--bar-size", help="Bar size, for example '1 min' or '1 day'."),
+    what_to_show: str = typer.Option("TRADES", "--what-to-show", help="Historical source, for example TRADES or MIDPOINT."),
+    use_rth: bool = typer.Option(True, "--rth/--all-hours", help="Use regular trading hours only."),
+    timeout: float = typer.Option(10.0, "--timeout", min=0.1, help="API timeout in seconds."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
+    try:
+        payload = get_historical_bars(
+            selected_profile,
+            symbol=symbol,
+            exchange=exchange,
+            currency=currency,
+            end=end,
+            duration=duration,
+            bar_size=bar_size,
+            what_to_show=what_to_show,
+            use_rth=use_rth,
+            timeout=timeout,
+        )
+    except Exception as exc:
+        exit_with_error(
+            f"Failed to fetch historical bars for '{symbol}' via profile '{selected_name}': {exc}",
+            code=ERROR_MARKET_DATA_REQUEST_FAILED,
+            exit_code=EXIT_CODE_API,
+            json_output=json_output,
+            details={
+                "profile": selected_name,
+                "symbol": symbol,
+                "exchange": exchange,
+                "currency": currency,
+                "duration": duration,
+                "bar_size": bar_size,
+                "what_to_show": what_to_show,
+            },
+        )
+        return
+
+    response = {
+        "profile": selected_name,
+        **payload,
+    }
+    if json_output:
+        print_json(response)
+        return
+
+    console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
+    console.print(render_bars_table(payload))
+
+
+if __name__ == "__main__":
+    app()
