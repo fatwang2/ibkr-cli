@@ -54,24 +54,22 @@ ibkr --version
 
 ## Quick start
 
-### Initialize local config
+### Configuration
 
-```bash
-ibkr profile init
-```
-
-This creates a config file under the path returned by:
+The CLI automatically creates a config file with default profiles on first use. To see where the config file is located:
 
 ```bash
 ibkr config-path
 ```
 
-The default generated profiles are:
+The default profiles are:
 
 - `paper` -> `127.0.0.1:7497`
 - `live` -> `127.0.0.1:7496`
 - `gateway-paper` -> `127.0.0.1:4002`
 - `gateway-live` -> `127.0.0.1:4001`
+
+You can edit the config file to customize host, port, or client_id. To reset it to defaults, run `ibkr profile init --force`.
 
 ### Inspect available profiles
 

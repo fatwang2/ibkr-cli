@@ -13,8 +13,7 @@ Start by understanding where the user is in their journey. Ask or infer:
 
 1. Do they have IB Gateway or TWS installed and running?
 2. Is `ibkr-cli` installed?
-3. Have they initialized their config (`ibkr profile init`)?
-4. Have they verified connectivity (`ibkr doctor`)?
+3. Have they verified connectivity (`ibkr doctor`)?
 
 Don't dump all commands at once. Walk them through the relevant next step based on their current state. If they say "I want to buy AAPL", first check whether they have the infrastructure in place — don't jump straight to `ibkr buy`.
 
@@ -67,15 +66,11 @@ Verify it works:
 ibkr --version
 ```
 
-## Step 3: Initialize and connect
+## Step 3: Verify connectivity
 
-### Create config
+The CLI automatically creates a config file with default profiles on first use — no manual initialization needed. The config file location can be found via `ibkr config-path`, and the user can edit it to customize host, port, or client_id if needed.
 
-```bash
-ibkr profile init
-```
-
-This generates a config file with four default profiles:
+The four default profiles are:
 
 | Profile         | Port | Use case              |
 |-----------------|------|-----------------------|
@@ -86,7 +81,7 @@ This generates a config file with four default profiles:
 
 Help the user pick the right profile based on which application they're running (Gateway vs TWS) and which mode (paper vs live).
 
-### Verify connectivity
+### Run doctor
 
 ```bash
 ibkr doctor --profile gateway-paper

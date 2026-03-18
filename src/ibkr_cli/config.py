@@ -43,7 +43,9 @@ def default_config() -> AppConfig:
 def load_config(path: Optional[Path] = None) -> Tuple[AppConfig, bool]:
     target = path or CONFIG_FILE
     if not target.exists():
-        return default_config(), False
+        config = default_config()
+        save_config(config, path=target, force=True)
+        return config, True
 
     raw = target.read_text(encoding="utf-8")
     data = tomllib.loads(raw)
