@@ -25,6 +25,7 @@ Once installed, simply tell your agent what you want to do (e.g., "help me insta
 - Finite quote watch mode for repeated quote updates
 - Historical bar retrieval
 - News headlines and article retrieval
+- Options chain lookup with expirations, strikes, and greeks
 - Automatic update check with `ibkr update`
 
 ## Requirements
@@ -173,6 +174,27 @@ Read a full article (using provider code and article ID from the headlines outpu
 ibkr news article BRFG "BRFG$12345" --profile gateway-paper
 ```
 
+### Options
+
+List available option chains (expirations and strikes) for a symbol:
+
+```bash
+ibkr options chain AAPL --profile gateway-paper
+```
+
+Fetch option quotes with greeks for a specific expiration (auto-selects strikes near the money):
+
+```bash
+ibkr options quotes AAPL 20260320 --profile gateway-paper
+```
+
+Filter by call/put and specific strikes:
+
+```bash
+ibkr options quotes AAPL 20260320 --right C --profile gateway-paper
+ibkr options quotes AAPL 20260320 --strike 150 --strike 155 --strike 160 --profile gateway-paper
+```
+
 ## JSON output
 
 Most read and trading commands support `--json` for machine-readable output.
@@ -218,6 +240,7 @@ Current error code families include:
 - `order_operation_failed`
 - `market_data_request_failed`
 - `news_request_failed`
+- `options_request_failed`
 
 ## Operational notes
 

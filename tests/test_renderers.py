@@ -8,6 +8,8 @@ from ibkr_cli.app import (
     render_news_article_table,
     render_news_headlines_table,
     render_news_providers_table,
+    render_option_chains_table,
+    render_option_quotes_table,
     render_quote_table,
     render_quote_watch_table,
 )
@@ -139,6 +141,53 @@ class RendererTests(unittest.TestCase):
         self.assertIn("News: AAPL", text)
         self.assertIn("Apple announces new product", text)
         self.assertIn("BRFG", text)
+
+    def test_render_option_chains_table(self) -> None:
+        payload = {
+            "symbol": "AAPL",
+            "rows": [
+                {
+                    "exchange": "SMART",
+                    "trading_class": "AAPL",
+                    "multiplier": "100",
+                    "expirations": ["20260320", "20260417", "20260515"],
+                    "expiration_count": 3,
+                    "strikes": [140.0, 145.0, 150.0],
+                    "strike_count": 3,
+                }
+            ],
+        }
+        text = render_text(render_option_chains_table(payload))
+        self.assertIn("Option Chains: AAPL", text)
+        self.assertIn("SMART", text)
+        self.assertIn("20260320", text)
+
+    def test_render_option_quotes_table(self) -> None:
+        payload = {
+            "symbol": "AAPL",
+            "expiration": "20260320",
+            "count": 1,
+            "rows": [
+                {
+                    "strike": 150.0,
+                    "right": "C",
+                    "bid": 5.10,
+                    "ask": 5.30,
+                    "last": 5.20,
+                    "volume": 1000.0,
+                    "open_interest": 5000.0,
+                    "implied_vol": 0.2500,
+                    "delta": 0.5500,
+                    "gamma": 0.0300,
+                    "theta": -0.0500,
+                    "vega": 0.1500,
+                },
+            ],
+        }
+        text = render_text(render_option_quotes_table(payload))
+        self.assertIn("Options: AAPL", text)
+        self.assertIn("150.00", text)
+        self.assertIn("0.5500", text)
 
     def test_render_news_article_table(self) -> None:
         payload = {

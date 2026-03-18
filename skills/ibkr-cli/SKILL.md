@@ -1,6 +1,6 @@
 ---
 name: ibkr-cli
-description: Guide users through Interactive Brokers CLI operations — from installing IB Gateway/TWS and ibkr-cli itself, to trading stocks, monitoring accounts, retrieving market data, and reading financial news. Use this skill whenever the user mentions Interactive Brokers, IBKR, TWS, IB Gateway, stock trading via CLI, checking portfolios or positions, getting quotes, placing orders, reading stock news, or anything related to brokerage account management through a terminal. Even if the user doesn't say "ibkr" explicitly, trigger when they want to buy/sell stocks from the command line, check their brokerage account, read news about a stock, or set up an API connection to a broker.
+description: Guide users through Interactive Brokers CLI operations — from installing IB Gateway/TWS and ibkr-cli itself, to trading stocks, monitoring accounts, retrieving market data, reading financial news, and exploring options chains. Use this skill whenever the user mentions Interactive Brokers, IBKR, TWS, IB Gateway, stock trading via CLI, checking portfolios or positions, getting quotes, placing orders, reading stock news, options chain, greeks, or anything related to brokerage account management through a terminal. Even if the user doesn't say "ibkr" explicitly, trigger when they want to buy/sell stocks from the command line, check their brokerage account, read news about a stock, look up options data, or set up an API connection to a broker.
 ---
 
 # ibkr-cli
@@ -248,6 +248,42 @@ ibkr news article BRFG "BRFG$12345" --profile gateway-paper
 ```
 
 Guide the user to first run `headlines` to get the article ID, then use `article` to read the full text.
+
+## Options
+
+ibkr-cli supports querying options chains and fetching option quotes with greeks.
+
+### List option chains
+
+```bash
+ibkr options chain AAPL --profile gateway-paper
+```
+
+Shows all available exchanges, trading classes, expirations, and strikes for a symbol's options. The user needs the expiration date from this output to fetch quotes.
+
+### Option quotes with greeks
+
+```bash
+ibkr options quotes AAPL 20260320 --profile gateway-paper
+```
+
+Fetches option quotes for a specific expiration. By default, it auto-selects strikes within ±10% of the current underlying price and shows both calls and puts.
+
+| Flag        | Default | Description                                              |
+|-------------|---------|----------------------------------------------------------|
+| `--right`   | both    | Filter by `C` (call) or `P` (put)                       |
+| `--strike`  | auto    | Specific strike price. Repeatable for multiple strikes   |
+| `--exchange`| `SMART` | Exchange routing                                         |
+
+Each row includes: bid, ask, last, volume, open interest, and full greeks (IV, delta, gamma, theta, vega).
+
+**Typical workflow:**
+
+1. `ibkr options chain AAPL` — see available expirations
+2. `ibkr options quotes AAPL 20260320` — get quotes for a specific expiry
+3. `ibkr options quotes AAPL 20260320 --right C --strike 150 --strike 155` — narrow down
+
+If the user asks "what are the options for AAPL", "show me AAPL calls", or "what's the delta on AAPL puts", use the options commands.
 
 ## JSON output
 

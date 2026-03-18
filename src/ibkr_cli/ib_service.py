@@ -1152,3 +1152,219 @@ def get_news_article(
             "article_type": str(article_type) if article_type is not None else None,
             "article_text": str(article_text) if article_text is not None else None,
         }
+
+
+def get_option_chains(
+    profile: ProfileConfig,
+    symbol: str,
+    exchange: str = "SMART",
+    currency: str = "USD",
+    timeout: float = 10.0,
+) -> Dict[str, object]:
+    try:
+        from ib_async import Stock
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "ib_async is not installed. Reinstall the project with Python 3.10+ to enable IBKR API commands."
+        ) from exc
+
+    with ib_session(profile, timeout=timeout) as ib:
+        contract = Stock(symbol=symbol.upper(), exchange=exchange, currency=currency)
+        qualified = ib.qualifyContracts(contract)
+        if not qualified:
+            raise RuntimeError(f"Unable to qualify contract for symbol '{symbol}'.")
+
+        qualified_contract = qualified[0]
+        with _suppress_ib_async_logs():
+            chains = ib.reqSecDefOptParams(
+                qualified_contract.symbol,
+                "",
+                qualified_contract.secType,
+                qualified_contract.conId,
+            )
+
+        rows = []
+        for chain in chains:
+            rows.append(
+                {
+                    "exchange": chain.exchange,
+                    "underlying_con_id": chain.underlyingConId,
+                    "trading_class": chain.tradingClass,
+                    "multiplier": chain.multiplier,
+                    "expirations": sorted(chain.expirations),
+                    "expiration_count": len(chain.expirations),
+                    "strikes": sorted(chain.strikes),
+                    "strike_count": len(chain.strikes),
+                }
+            )
+        rows.sort(key=lambda row: (str(row["exchange"]), str(row["trading_class"])))
+
+        return {
+            "symbol": qualified_contract.symbol,
+            "local_symbol": qualified_contract.localSymbol,
+            "exchange": qualified_contract.exchange,
+            "primary_exchange": qualified_contract.primaryExchange,
+            "currency": qualified_contract.currency,
+            "sec_type": qualified_contract.secType,
+            "con_id": qualified_contract.conId,
+            "chain_count": len(rows),
+            "rows": rows,
+        }
+
+
+def _greeks_payload(greeks: object) -> Optional[Dict[str, Optional[float]]]:
+    if greeks is None:
+        return None
+    return {
+        "implied_vol": _normalize_number(getattr(greeks, "impliedVol", None)),
+        "delta": _normalize_number(getattr(greeks, "delta", None)),
+        "gamma": _normalize_number(getattr(greeks, "gamma", None)),
+        "theta": _normalize_number(getattr(greeks, "theta", None)),
+        "vega": _normalize_number(getattr(greeks, "vega", None)),
+        "opt_price": _normalize_number(getattr(greeks, "optPrice", None)),
+        "und_price": _normalize_number(getattr(greeks, "undPrice", None)),
+        "pv_dividend": _normalize_number(getattr(greeks, "pvDividend", None)),
+    }
+
+
+def get_option_quotes(
+    profile: ProfileConfig,
+    symbol: str,
+    expiration: str,
+    strikes: Optional[List[float]] = None,
+    right: str = "",
+    exchange: str = "SMART",
+    currency: str = "USD",
+    timeout: float = 10.0,
+) -> Dict[str, object]:
+    try:
+        from ib_async import Option, Stock
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "ib_async is not installed. Reinstall the project with Python 3.10+ to enable IBKR API commands."
+        ) from exc
+
+    normalized_right = right.upper()
+    if normalized_right and normalized_right not in ("C", "P", "CALL", "PUT"):
+        raise ValueError(f"Unsupported right '{right}'. Use C, P, CALL, or PUT.")
+    rights = [normalized_right] if normalized_right else ["C", "P"]
+
+    with ib_session(profile, timeout=timeout) as ib:
+        underlying = Stock(symbol=symbol.upper(), exchange=exchange, currency=currency)
+        qualified_underlying = ib.qualifyContracts(underlying)
+        if not qualified_underlying:
+            raise RuntimeError(f"Unable to qualify contract for symbol '{symbol}'.")
+
+        qualified_contract = qualified_underlying[0]
+
+        if strikes is None:
+            with _suppress_ib_async_logs():
+                chains = ib.reqSecDefOptParams(
+                    qualified_contract.symbol,
+                    "",
+                    qualified_contract.secType,
+                    qualified_contract.conId,
+                )
+            smart_chain = None
+            for chain in chains:
+                if chain.exchange == exchange:
+                    smart_chain = chain
+                    break
+            if smart_chain is None and chains:
+                smart_chain = chains[0]
+            if smart_chain is None:
+                raise RuntimeError(f"No option chains found for '{symbol}'.")
+
+            if expiration not in smart_chain.expirations:
+                raise ValueError(
+                    f"Expiration '{expiration}' not available. "
+                    f"Available: {sorted(smart_chain.expirations)[:10]}..."
+                )
+
+            with _suppress_ib_async_logs():
+                ib.reqMarketDataType(1)
+                underlying_ticker = ib.reqTickers(qualified_contract)[0]
+            und_price = None
+            for field in ("last", "close", "bid", "ask"):
+                val = _normalize_number(getattr(underlying_ticker, field, None))
+                if val is not None and val > 0:
+                    und_price = val
+                    break
+
+            if und_price is not None:
+                strike_list = sorted(
+                    s for s in smart_chain.strikes
+                    if und_price * 0.9 <= s <= und_price * 1.1
+                )
+            else:
+                all_strikes = sorted(smart_chain.strikes)
+                mid = len(all_strikes) // 2
+                strike_list = all_strikes[max(0, mid - 5):mid + 5]
+        else:
+            strike_list = sorted(strikes)
+
+        contracts = [
+            Option(symbol.upper(), expiration, strike, r, exchange, currency=currency)
+            for r in rights
+            for strike in strike_list
+        ]
+
+        with _suppress_ib_async_logs():
+            qualified_options = ib.qualifyContracts(*contracts)
+
+        if not qualified_options:
+            raise RuntimeError(
+                f"Unable to qualify any option contracts for '{symbol}' "
+                f"expiration={expiration} strikes={strike_list}."
+            )
+
+        with _suppress_ib_async_logs():
+            ib.reqMarketDataType(1)
+            tickers = ib.reqTickers(*qualified_options)
+
+        rows = []
+        for ticker in tickers:
+            opt = ticker.contract
+            model = _greeks_payload(ticker.modelGreeks)
+            rows.append(
+                {
+                    "symbol": opt.symbol,
+                    "local_symbol": opt.localSymbol,
+                    "con_id": opt.conId,
+                    "expiration": opt.lastTradeDateOrContractMonth,
+                    "strike": opt.strike,
+                    "right": opt.right,
+                    "exchange": opt.exchange,
+                    "trading_class": opt.tradingClass,
+                    "multiplier": opt.multiplier,
+                    "bid": _normalize_number(ticker.bid),
+                    "ask": _normalize_number(ticker.ask),
+                    "last": _normalize_number(ticker.last),
+                    "volume": _normalize_number(ticker.volume),
+                    "open_interest": _normalize_number(ticker.openInterest),
+                    "implied_vol": model["implied_vol"] if model else None,
+                    "delta": model["delta"] if model else None,
+                    "gamma": model["gamma"] if model else None,
+                    "theta": model["theta"] if model else None,
+                    "vega": model["vega"] if model else None,
+                    "und_price": model["und_price"] if model else None,
+                    "model_greeks": model,
+                }
+            )
+
+        rows.sort(key=lambda row: (str(row["right"]), float(row["strike"])))
+
+        return {
+            "symbol": qualified_contract.symbol,
+            "local_symbol": qualified_contract.localSymbol,
+            "exchange": qualified_contract.exchange,
+            "primary_exchange": qualified_contract.primaryExchange,
+            "currency": qualified_contract.currency,
+            "sec_type": qualified_contract.secType,
+            "con_id": qualified_contract.conId,
+            "expiration": expiration,
+            "right_filter": normalized_right or "ALL",
+            "strike_count": len(strike_list),
+            "count": len(rows),
+            "rows": rows,
+        }

@@ -31,6 +31,8 @@ from ibkr_cli.ib_service import (
     get_news_headlines,
     get_news_providers,
     get_open_orders,
+    get_option_chains,
+    get_option_quotes,
     get_positions,
     get_quote_snapshot,
     preview_stock_order,
@@ -47,11 +49,13 @@ connect_app = typer.Typer(no_args_is_help=True, help="Connectivity checks for TW
 account_app = typer.Typer(no_args_is_help=True, help="Account-related read operations.")
 orders_app = typer.Typer(no_args_is_help=True, help="Order-related read operations.")
 news_app = typer.Typer(no_args_is_help=True, help="News headlines and articles.")
+options_app = typer.Typer(no_args_is_help=True, help="Options chain and quotes.")
 app.add_typer(profile_app, name="profile")
 app.add_typer(connect_app, name="connect")
 app.add_typer(account_app, name="account")
 app.add_typer(orders_app, name="orders")
 app.add_typer(news_app, name="news")
+app.add_typer(options_app, name="options")
 
 EXIT_CODE_GENERAL = 1
 EXIT_CODE_USAGE = 2
@@ -70,6 +74,7 @@ ERROR_ORDER_QUERY_FAILED = "order_query_failed"
 ERROR_ORDER_OPERATION_FAILED = "order_operation_failed"
 ERROR_MARKET_DATA_REQUEST_FAILED = "market_data_request_failed"
 ERROR_NEWS_REQUEST_FAILED = "news_request_failed"
+ERROR_OPTIONS_REQUEST_FAILED = "options_request_failed"
 
 
 def package_version() -> str:
@@ -1309,6 +1314,167 @@ def news_article(
     if payload.get("article_text"):
         console.print()
         console.print(payload["article_text"])
+
+
+def render_option_chains_table(payload: Dict[str, object]) -> Table:
+    table = Table(title=f"Option Chains: {payload['symbol']}")
+    table.add_column("Exchange", style="cyan")
+    table.add_column("Trading Class")
+    table.add_column("Multiplier", justify="right")
+    table.add_column("Expirations", justify="right")
+    table.add_column("Strikes", justify="right")
+    table.add_column("Nearest Expirations")
+    for row in payload["rows"]:
+        nearest = ", ".join(row["expirations"][:5])
+        if row["expiration_count"] > 5:
+            nearest += f" ... (+{row['expiration_count'] - 5} more)"
+        table.add_row(
+            str(row["exchange"]),
+            str(row["trading_class"]),
+            str(row["multiplier"]),
+            str(row["expiration_count"]),
+            str(row["strike_count"]),
+            nearest,
+        )
+    return table
+
+
+def render_option_quotes_table(payload: Dict[str, object]) -> Table:
+    title = f"Options: {payload['symbol']} exp={payload['expiration']} ({payload['count']} contracts)"
+    table = Table(title=title)
+    table.add_column("Strike", justify="right", style="cyan")
+    table.add_column("Right")
+    table.add_column("Bid", justify="right")
+    table.add_column("Ask", justify="right")
+    table.add_column("Last", justify="right")
+    table.add_column("Vol", justify="right")
+    table.add_column("OI", justify="right")
+    table.add_column("IV", justify="right")
+    table.add_column("Delta", justify="right")
+    table.add_column("Gamma", justify="right")
+    table.add_column("Theta", justify="right")
+    table.add_column("Vega", justify="right")
+
+    def fmt(v: object, decimals: int = 2) -> str:
+        if v is None:
+            return ""
+        return f"{float(v):.{decimals}f}"
+
+    def fmt_greeks(v: object) -> str:
+        if v is None:
+            return ""
+        return f"{float(v):.4f}"
+
+    for row in payload["rows"]:
+        table.add_row(
+            fmt(row["strike"]),
+            str(row["right"]),
+            fmt(row["bid"]),
+            fmt(row["ask"]),
+            fmt(row["last"]),
+            fmt(row["volume"], 0),
+            fmt(row["open_interest"], 0),
+            fmt_greeks(row["implied_vol"]),
+            fmt_greeks(row["delta"]),
+            fmt_greeks(row["gamma"]),
+            fmt_greeks(row["theta"]),
+            fmt_greeks(row["vega"]),
+        )
+    return table
+
+
+@options_app.command("chain")
+def options_chain(
+    symbol: str = typer.Argument(..., help="Ticker symbol, for example AAPL."),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
+    exchange: str = typer.Option("SMART", "--exchange", help="Exchange to use for contract qualification."),
+    currency: str = typer.Option("USD", "--currency", help="Currency to use for contract qualification."),
+    timeout: float = typer.Option(10.0, "--timeout", min=0.1, help="API timeout in seconds."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    """List available option chains (expirations and strikes) for a symbol."""
+    config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
+    try:
+        payload = get_option_chains(
+            selected_profile,
+            symbol=symbol,
+            exchange=exchange,
+            currency=currency,
+            timeout=timeout,
+        )
+    except Exception as exc:
+        exit_with_error(
+            f"Failed to fetch option chains for '{symbol}' via profile '{selected_name}': {exc}",
+            code=ERROR_OPTIONS_REQUEST_FAILED,
+            exit_code=EXIT_CODE_API,
+            json_output=json_output,
+            details={"profile": selected_name, "symbol": symbol},
+        )
+        return
+
+    response = {
+        "profile": selected_name,
+        **payload,
+    }
+    if json_output:
+        print_json(response)
+        return
+
+    console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
+    console.print(render_option_chains_table(payload))
+
+
+@options_app.command("quotes")
+def options_quotes(
+    symbol: str = typer.Argument(..., help="Ticker symbol, for example AAPL."),
+    expiration: str = typer.Argument(..., help="Expiration date in YYYYMMDD format, e.g. 20260320."),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
+    exchange: str = typer.Option("SMART", "--exchange", help="Exchange to use for contract qualification."),
+    currency: str = typer.Option("USD", "--currency", help="Currency to use for contract qualification."),
+    right: str = typer.Option("", "--right", help="Filter by C (call) or P (put). Empty means both."),
+    strike: Optional[List[float]] = typer.Option(None, "--strike", help="Specific strike prices. Repeatable. Omit to auto-select near the money."),
+    timeout: float = typer.Option(10.0, "--timeout", min=0.1, help="API timeout in seconds."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    """Fetch option quotes with greeks for a specific expiration."""
+    config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
+    try:
+        payload = get_option_quotes(
+            selected_profile,
+            symbol=symbol,
+            expiration=expiration,
+            strikes=strike if strike else None,
+            right=right,
+            exchange=exchange,
+            currency=currency,
+            timeout=timeout,
+        )
+    except Exception as exc:
+        exit_with_error(
+            f"Failed to fetch option quotes for '{symbol}' exp={expiration} via profile '{selected_name}': {exc}",
+            code=ERROR_OPTIONS_REQUEST_FAILED,
+            exit_code=EXIT_CODE_API,
+            json_output=json_output,
+            details={
+                "profile": selected_name,
+                "symbol": symbol,
+                "expiration": expiration,
+                "right": right,
+                "strikes": strike,
+            },
+        )
+        return
+
+    response = {
+        "profile": selected_name,
+        **payload,
+    }
+    if json_output:
+        print_json(response)
+        return
+
+    console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
+    console.print(render_option_quotes_table(payload))
 
 
 @app.command()

@@ -246,6 +246,148 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rendered["payload"]["error"]["details"]["requested_profile"], "missing")
         self.assertIn("gateway-paper", rendered["payload"]["error"]["details"]["available_profiles"])
 
+    def test_options_chain_json(self) -> None:
+        rendered = {}
+
+        def fake_chains(profile, **kwargs):
+            return {
+                "symbol": "AAPL",
+                "local_symbol": "AAPL",
+                "exchange": "SMART",
+                "primary_exchange": "NASDAQ",
+                "currency": "USD",
+                "sec_type": "STK",
+                "con_id": 265598,
+                "chain_count": 1,
+                "rows": [
+                    {
+                        "exchange": "SMART",
+                        "underlying_con_id": 265598,
+                        "trading_class": "AAPL",
+                        "multiplier": "100",
+                        "expirations": ["20260320", "20260417"],
+                        "expiration_count": 2,
+                        "strikes": [140.0, 145.0, 150.0],
+                        "strike_count": 3,
+                    }
+                ],
+            }
+
+        with patch.object(
+            app_module,
+            "resolve_profile_or_exit",
+            side_effect=lambda profile, json_output=False: stub_profile(),
+        ):
+            with patch.object(app_module, "get_option_chains", side_effect=fake_chains):
+                with patch.object(app_module, "print_json", side_effect=lambda payload: rendered.setdefault("payload", payload)):
+                    result = runner.invoke(app_module.app, ["options", "chain", "AAPL", "--json"])
+
+        self.assertEqual(result.exit_code, 0)
+        payload = rendered["payload"]
+        self.assertEqual(payload["symbol"], "AAPL")
+        self.assertEqual(payload["chain_count"], 1)
+        self.assertEqual(payload["rows"][0]["trading_class"], "AAPL")
+
+    def test_options_quotes_json(self) -> None:
+        rendered = {}
+
+        def fake_quotes(profile, **kwargs):
+            return {
+                "symbol": "AAPL",
+                "local_symbol": "AAPL",
+                "exchange": "SMART",
+                "primary_exchange": "NASDAQ",
+                "currency": "USD",
+                "sec_type": "STK",
+                "con_id": 265598,
+                "expiration": "20260320",
+                "right_filter": "ALL",
+                "strike_count": 1,
+                "count": 2,
+                "rows": [
+                    {
+                        "symbol": "AAPL",
+                        "local_symbol": "AAPL  260320C00150000",
+                        "con_id": 123456,
+                        "expiration": "20260320",
+                        "strike": 150.0,
+                        "right": "C",
+                        "exchange": "SMART",
+                        "trading_class": "AAPL",
+                        "multiplier": "100",
+                        "bid": 5.10,
+                        "ask": 5.30,
+                        "last": 5.20,
+                        "volume": 1000.0,
+                        "open_interest": 5000.0,
+                        "implied_vol": 0.25,
+                        "delta": 0.55,
+                        "gamma": 0.03,
+                        "theta": -0.05,
+                        "vega": 0.15,
+                        "und_price": 152.0,
+                        "model_greeks": {
+                            "implied_vol": 0.25,
+                            "delta": 0.55,
+                            "gamma": 0.03,
+                            "theta": -0.05,
+                            "vega": 0.15,
+                            "opt_price": 5.20,
+                            "und_price": 152.0,
+                            "pv_dividend": 0.5,
+                        },
+                    },
+                    {
+                        "symbol": "AAPL",
+                        "local_symbol": "AAPL  260320P00150000",
+                        "con_id": 123457,
+                        "expiration": "20260320",
+                        "strike": 150.0,
+                        "right": "P",
+                        "exchange": "SMART",
+                        "trading_class": "AAPL",
+                        "multiplier": "100",
+                        "bid": 3.10,
+                        "ask": 3.30,
+                        "last": 3.20,
+                        "volume": 800.0,
+                        "open_interest": 3000.0,
+                        "implied_vol": 0.26,
+                        "delta": -0.45,
+                        "gamma": 0.03,
+                        "theta": -0.04,
+                        "vega": 0.14,
+                        "und_price": 152.0,
+                        "model_greeks": {
+                            "implied_vol": 0.26,
+                            "delta": -0.45,
+                            "gamma": 0.03,
+                            "theta": -0.04,
+                            "vega": 0.14,
+                            "opt_price": 3.20,
+                            "und_price": 152.0,
+                            "pv_dividend": 0.5,
+                        },
+                    },
+                ],
+            }
+
+        with patch.object(
+            app_module,
+            "resolve_profile_or_exit",
+            side_effect=lambda profile, json_output=False: stub_profile(),
+        ):
+            with patch.object(app_module, "get_option_quotes", side_effect=fake_quotes):
+                with patch.object(app_module, "print_json", side_effect=lambda payload: rendered.setdefault("payload", payload)):
+                    result = runner.invoke(app_module.app, ["options", "quotes", "AAPL", "20260320", "--json"])
+
+        self.assertEqual(result.exit_code, 0)
+        payload = rendered["payload"]
+        self.assertEqual(payload["expiration"], "20260320")
+        self.assertEqual(payload["count"], 2)
+        self.assertEqual(payload["rows"][0]["delta"], 0.55)
+        self.assertEqual(payload["rows"][1]["right"], "P")
+
     def test_news_providers_json(self) -> None:
         rendered = {}
 
