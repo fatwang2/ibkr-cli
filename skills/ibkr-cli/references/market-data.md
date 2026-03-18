@@ -1,4 +1,4 @@
-# Market Data, News, and Options
+# Market Data, News, Options, and Scanner
 
 ## Quotes
 
@@ -109,3 +109,38 @@ Each row includes: bid, ask, last, volume, open interest, and full greeks (IV, d
 3. `ibkr options quotes AAPL 20260320 --right C --strike 150 --strike 155` — narrow down
 
 If the user asks "what are the options for AAPL", "show me AAPL calls", or "what's the delta on AAPL puts", use the options commands.
+
+## Scanner
+
+The market scanner screens stocks by various criteria — top gainers, most active, high dividend yield, etc.
+
+### Discover available parameters
+
+```bash
+ibkr scanner params codes --profile gateway-paper
+ibkr scanner params instruments --profile gateway-paper
+ibkr scanner params locations --profile gateway-paper
+```
+
+The `codes` section lists all scan types (e.g., `TOP_PERC_GAIN`, `MOST_ACTIVE`, `HOT_BY_VOLUME`). The user needs a scan code to run a scan.
+
+### Run a scan
+
+```bash
+ibkr scanner run TOP_PERC_GAIN --profile gateway-paper
+ibkr scanner run MOST_ACTIVE --limit 10 --profile gateway-paper
+ibkr scanner run HOT_BY_VOLUME --above-price 10 --below-price 100 --profile gateway-paper
+```
+
+| Flag                 | Default          | Description                         |
+|----------------------|------------------|-------------------------------------|
+| `--instrument`       | `STK`            | Instrument type (STK, ETF.EQ.US)    |
+| `--location`         | `STK.US.MAJOR`   | Market location code                |
+| `--limit`            | `20`             | Maximum results (1–50)              |
+| `--above-price`      | —                | Minimum price filter                |
+| `--below-price`      | —                | Maximum price filter                |
+| `--above-volume`     | —                | Minimum volume filter               |
+| `--market-cap-above` | —                | Minimum market cap filter           |
+| `--market-cap-below` | —                | Maximum market cap filter           |
+
+If the user asks "what stocks are moving today", "show me top gainers", or "find high dividend stocks", use the scanner commands.

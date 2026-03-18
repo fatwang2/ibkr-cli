@@ -246,6 +246,96 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rendered["payload"]["error"]["details"]["requested_profile"], "missing")
         self.assertIn("gateway-paper", rendered["payload"]["error"]["details"]["available_profiles"])
 
+    def test_scanner_params_json(self) -> None:
+        rendered = {}
+
+        def fake_params(profile, **kwargs):
+            return {
+                "scan_code_count": 2,
+                "scan_codes": [
+                    {"code": "MOST_ACTIVE", "display_name": "Most Active"},
+                    {"code": "TOP_PERC_GAIN", "display_name": "Top % Gainers"},
+                ],
+                "instrument_count": 1,
+                "instruments": [{"type": "STK", "name": "US Stocks"}],
+                "location_count": 1,
+                "locations": [{"code": "STK.US.MAJOR", "display_name": "US Major"}],
+            }
+
+        with patch.object(
+            app_module,
+            "resolve_profile_or_exit",
+            side_effect=lambda profile, json_output=False: stub_profile(),
+        ):
+            with patch.object(app_module, "get_scanner_parameters", side_effect=fake_params):
+                with patch.object(app_module, "print_json", side_effect=lambda payload: rendered.setdefault("payload", payload)):
+                    result = runner.invoke(app_module.app, ["scanner", "params", "codes", "--json"])
+
+        self.assertEqual(result.exit_code, 0)
+        payload = rendered["payload"]
+        self.assertEqual(payload["scan_code_count"], 2)
+        self.assertEqual(payload["scan_codes"][0]["code"], "MOST_ACTIVE")
+
+    def test_scanner_run_json(self) -> None:
+        rendered = {}
+
+        def fake_run(profile, **kwargs):
+            return {
+                "scan_code": "TOP_PERC_GAIN",
+                "instrument": "STK",
+                "location_code": "STK.US.MAJOR",
+                "num_rows": 20,
+                "count": 2,
+                "rows": [
+                    {
+                        "rank": 0,
+                        "symbol": "AAPL",
+                        "local_symbol": "AAPL",
+                        "sec_type": "STK",
+                        "exchange": "SMART",
+                        "primary_exchange": "NASDAQ",
+                        "currency": "USD",
+                        "con_id": 265598,
+                        "industry": "Technology",
+                        "category": "Computers",
+                        "distance": None,
+                        "benchmark": "32.50",
+                        "projection": None,
+                    },
+                    {
+                        "rank": 1,
+                        "symbol": "TSLA",
+                        "local_symbol": "TSLA",
+                        "sec_type": "STK",
+                        "exchange": "SMART",
+                        "primary_exchange": "NASDAQ",
+                        "currency": "USD",
+                        "con_id": 76792991,
+                        "industry": "Technology",
+                        "category": "Auto",
+                        "distance": None,
+                        "benchmark": "28.10",
+                        "projection": None,
+                    },
+                ],
+            }
+
+        with patch.object(
+            app_module,
+            "resolve_profile_or_exit",
+            side_effect=lambda profile, json_output=False: stub_profile(),
+        ):
+            with patch.object(app_module, "run_scanner", side_effect=fake_run):
+                with patch.object(app_module, "print_json", side_effect=lambda payload: rendered.setdefault("payload", payload)):
+                    result = runner.invoke(app_module.app, ["scanner", "run", "TOP_PERC_GAIN", "--json"])
+
+        self.assertEqual(result.exit_code, 0)
+        payload = rendered["payload"]
+        self.assertEqual(payload["scan_code"], "TOP_PERC_GAIN")
+        self.assertEqual(payload["count"], 2)
+        self.assertEqual(payload["rows"][0]["symbol"], "AAPL")
+        self.assertEqual(payload["rows"][1]["symbol"], "TSLA")
+
     def test_options_chain_json(self) -> None:
         rendered = {}
 

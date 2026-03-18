@@ -33,9 +33,11 @@ from ibkr_cli.ib_service import (
     get_open_orders,
     get_option_chains,
     get_option_quotes,
+    get_scanner_parameters,
     get_positions,
     get_quote_snapshot,
     preview_stock_order,
+    run_scanner,
     submit_stock_order,
     watch_quote,
 )
@@ -50,12 +52,14 @@ account_app = typer.Typer(no_args_is_help=True, help="Account-related read opera
 orders_app = typer.Typer(no_args_is_help=True, help="Order-related read operations.")
 news_app = typer.Typer(no_args_is_help=True, help="News headlines and articles.")
 options_app = typer.Typer(no_args_is_help=True, help="Options chain and quotes.")
+scanner_app = typer.Typer(no_args_is_help=True, help="Market scanner and screener.")
 app.add_typer(profile_app, name="profile")
 app.add_typer(connect_app, name="connect")
 app.add_typer(account_app, name="account")
 app.add_typer(orders_app, name="orders")
 app.add_typer(news_app, name="news")
 app.add_typer(options_app, name="options")
+app.add_typer(scanner_app, name="scanner")
 
 EXIT_CODE_GENERAL = 1
 EXIT_CODE_USAGE = 2
@@ -75,6 +79,7 @@ ERROR_ORDER_OPERATION_FAILED = "order_operation_failed"
 ERROR_MARKET_DATA_REQUEST_FAILED = "market_data_request_failed"
 ERROR_NEWS_REQUEST_FAILED = "news_request_failed"
 ERROR_OPTIONS_REQUEST_FAILED = "options_request_failed"
+ERROR_SCANNER_REQUEST_FAILED = "scanner_request_failed"
 
 
 def package_version() -> str:
@@ -1475,6 +1480,155 @@ def options_quotes(
 
     console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
     console.print(render_option_quotes_table(payload))
+
+
+def render_scanner_params_table(payload: Dict[str, object], section: str) -> Table:
+    if section == "codes":
+        table = Table(title=f"Scan Codes ({payload['scan_code_count']})")
+        table.add_column("Code", style="cyan")
+        table.add_column("Description")
+        for row in payload["scan_codes"]:
+            table.add_row(str(row["code"]), str(row["display_name"]))
+    elif section == "instruments":
+        table = Table(title=f"Instruments ({payload['instrument_count']})")
+        table.add_column("Type", style="cyan")
+        table.add_column("Name")
+        for row in payload["instruments"]:
+            table.add_row(str(row["type"]), str(row["name"]))
+    else:
+        table = Table(title=f"Locations ({payload['location_count']})")
+        table.add_column("Code", style="cyan")
+        table.add_column("Description")
+        for row in payload["locations"]:
+            table.add_row(str(row["code"]), str(row["display_name"]))
+    return table
+
+
+def render_scanner_results_table(payload: Dict[str, object]) -> Table:
+    title = f"Scanner: {payload['scan_code']} ({payload['count']} results)"
+    table = Table(title=title)
+    table.add_column("Rank", justify="right", style="cyan")
+    table.add_column("Symbol")
+    table.add_column("SecType")
+    table.add_column("Exchange")
+    table.add_column("Currency")
+    table.add_column("Industry")
+    table.add_column("Benchmark", justify="right")
+    table.add_column("Projection", justify="right")
+    for row in payload["rows"]:
+        table.add_row(
+            str(row["rank"]),
+            str(row["symbol"]),
+            str(row["sec_type"]),
+            str(row["primary_exchange"] or row["exchange"]),
+            str(row["currency"]),
+            str(row["industry"] or ""),
+            str(row["benchmark"] or ""),
+            str(row["projection"] or ""),
+        )
+    return table
+
+
+@scanner_app.command("params")
+def scanner_params(
+    section: str = typer.Argument("codes", help="Section to show: codes, instruments, or locations."),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
+    timeout: float = typer.Option(10.0, "--timeout", min=0.1, help="API timeout in seconds."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    """List available scanner parameters (scan codes, instruments, locations)."""
+    normalized_section = section.lower()
+    if normalized_section not in ("codes", "instruments", "locations"):
+        exit_with_error(
+            f"Unknown section '{section}'. Use codes, instruments, or locations.",
+            code=ERROR_SCANNER_REQUEST_FAILED,
+            exit_code=EXIT_CODE_USAGE,
+            json_output=json_output,
+            details={"section": section},
+        )
+        return
+
+    config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
+    try:
+        payload = get_scanner_parameters(selected_profile, timeout=timeout)
+    except Exception as exc:
+        exit_with_error(
+            f"Failed to fetch scanner parameters via profile '{selected_name}': {exc}",
+            code=ERROR_SCANNER_REQUEST_FAILED,
+            exit_code=EXIT_CODE_API,
+            json_output=json_output,
+            details={"profile": selected_name},
+        )
+        return
+
+    response = {
+        "profile": selected_name,
+        **payload,
+    }
+    if json_output:
+        print_json(response)
+        return
+
+    console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
+    console.print(render_scanner_params_table(payload, normalized_section))
+
+
+@scanner_app.command("run")
+def scanner_run(
+    scan_code: str = typer.Argument(..., help="Scan code, e.g. TOP_PERC_GAIN, MOST_ACTIVE, HOT_BY_VOLUME."),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
+    instrument: str = typer.Option("STK", "--instrument", help="Instrument type, e.g. STK, ETF.EQ.US."),
+    location: str = typer.Option("STK.US.MAJOR", "--location", help="Location code, e.g. STK.US.MAJOR, STK.NYSE."),
+    num_rows: int = typer.Option(20, "--limit", min=1, max=50, help="Maximum number of results."),
+    above_price: Optional[float] = typer.Option(None, "--above-price", help="Minimum price filter."),
+    below_price: Optional[float] = typer.Option(None, "--below-price", help="Maximum price filter."),
+    above_volume: Optional[int] = typer.Option(None, "--above-volume", help="Minimum volume filter."),
+    market_cap_above: Optional[float] = typer.Option(None, "--market-cap-above", help="Minimum market cap filter."),
+    market_cap_below: Optional[float] = typer.Option(None, "--market-cap-below", help="Maximum market cap filter."),
+    timeout: float = typer.Option(10.0, "--timeout", min=0.1, help="API timeout in seconds."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    """Run a market scan and return matching instruments."""
+    config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
+    try:
+        payload = run_scanner(
+            selected_profile,
+            scan_code=scan_code,
+            instrument=instrument,
+            location_code=location,
+            num_rows=num_rows,
+            above_price=above_price,
+            below_price=below_price,
+            above_volume=above_volume,
+            market_cap_above=market_cap_above,
+            market_cap_below=market_cap_below,
+            timeout=timeout,
+        )
+    except Exception as exc:
+        exit_with_error(
+            f"Failed to run scanner '{scan_code}' via profile '{selected_name}': {exc}",
+            code=ERROR_SCANNER_REQUEST_FAILED,
+            exit_code=EXIT_CODE_API,
+            json_output=json_output,
+            details={
+                "profile": selected_name,
+                "scan_code": scan_code,
+                "instrument": instrument,
+                "location": location,
+            },
+        )
+        return
+
+    response = {
+        "profile": selected_name,
+        **payload,
+    }
+    if json_output:
+        print_json(response)
+        return
+
+    console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
+    console.print(render_scanner_results_table(payload))
 
 
 @app.command()

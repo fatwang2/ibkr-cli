@@ -26,6 +26,7 @@ Once installed, simply tell your agent what you want to do (e.g., "help me insta
 - Historical bar retrieval
 - News headlines and article retrieval
 - Options chain lookup with expirations, strikes, and greeks
+- Market scanner for screening stocks by various criteria
 - Automatic update check with `ibkr update`
 
 ## Requirements
@@ -195,6 +196,25 @@ ibkr options quotes AAPL 20260320 --right C --profile gateway-paper
 ibkr options quotes AAPL 20260320 --strike 150 --strike 155 --strike 160 --profile gateway-paper
 ```
 
+### Scanner
+
+List available scan codes, instruments, or locations:
+
+```bash
+ibkr scanner params codes --profile gateway-paper
+ibkr scanner params instruments --profile gateway-paper
+ibkr scanner params locations --profile gateway-paper
+```
+
+Run a market scan:
+
+```bash
+ibkr scanner run TOP_PERC_GAIN --profile gateway-paper
+ibkr scanner run MOST_ACTIVE --limit 10 --profile gateway-paper
+ibkr scanner run HOT_BY_VOLUME --above-price 10 --below-price 100 --above-volume 1000000 --profile gateway-paper
+ibkr scanner run HIGH_DIVIDEND_YIELD --market-cap-above 1000000000 --profile gateway-paper
+```
+
 ## JSON output
 
 Most read and trading commands support `--json` for machine-readable output.
@@ -241,6 +261,7 @@ Current error code families include:
 - `market_data_request_failed`
 - `news_request_failed`
 - `options_request_failed`
+- `scanner_request_failed`
 
 ## Operational notes
 

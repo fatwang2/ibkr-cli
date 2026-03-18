@@ -1,6 +1,6 @@
 ---
 name: ibkr-cli
-description: Guide users through Interactive Brokers CLI operations — from installing IB Gateway/TWS and ibkr-cli itself, to trading stocks, monitoring accounts, retrieving market data, reading financial news, and exploring options chains. Use this skill whenever the user mentions Interactive Brokers, IBKR, TWS, IB Gateway, stock trading via CLI, checking portfolios or positions, getting quotes, placing orders, reading stock news, options chain, greeks, or anything related to brokerage account management through a terminal. Even if the user doesn't say "ibkr" explicitly, trigger when they want to buy/sell stocks from the command line, check their brokerage account, read news about a stock, look up options data, or set up an API connection to a broker.
+description: Guide users through Interactive Brokers CLI operations — from installing IB Gateway/TWS and ibkr-cli itself, to trading stocks, monitoring accounts, retrieving market data, reading financial news, exploring options chains, and screening stocks with market scanners. Use this skill whenever the user mentions Interactive Brokers, IBKR, TWS, IB Gateway, stock trading via CLI, checking portfolios or positions, getting quotes, placing orders, reading stock news, options chain, greeks, stock screener, market scanner, top gainers, most active, or anything related to brokerage account management through a terminal. Even if the user doesn't say "ibkr" explicitly, trigger when they want to buy/sell stocks from the command line, check their brokerage account, read news about a stock, look up options data, screen for stocks, or set up an API connection to a broker.
 ---
 
 # ibkr-cli
@@ -25,7 +25,7 @@ Based on what the user needs, read the corresponding reference file for detailed
 |---|---|
 | Installing Gateway/TWS, installing ibkr-cli, configuring profiles, verifying connectivity, troubleshooting connection issues | `references/setup.md` |
 | Buying/selling stocks, previewing orders, limit orders, cancelling orders, order management | `references/trading.md` |
-| Quotes, historical bars, news headlines/articles, options chains, options greeks | `references/market-data.md` |
+| Quotes, historical bars, news headlines/articles, options chains, options greeks, market scanner/screener | `references/market-data.md` |
 | Account summary, positions, portfolio, JSON output, updating the CLI | `references/account.md` |
 
 When a user's request spans multiple areas (e.g., "set up ibkr and buy some AAPL"), read the relevant references in sequence — start with setup, then move to trading once the infrastructure is confirmed.

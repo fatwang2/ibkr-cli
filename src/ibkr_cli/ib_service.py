@@ -1368,3 +1368,121 @@ def get_option_quotes(
             "count": len(rows),
             "rows": rows,
         }
+
+
+def get_scanner_parameters(
+    profile: ProfileConfig,
+    timeout: float = 10.0,
+) -> Dict[str, object]:
+    import xml.etree.ElementTree as ET
+
+    with ib_session(profile, timeout=timeout) as ib:
+        with _suppress_ib_async_logs():
+            xml_str = ib.reqScannerParameters()
+
+    tree = ET.fromstring(xml_str)
+    scan_codes = []
+    for elem in tree.findall(".//ScanCode"):
+        code = elem.findtext("scanCode", "")
+        display = elem.findtext("displayName", "")
+        if code:
+            scan_codes.append({"code": code, "display_name": display})
+    scan_codes.sort(key=lambda r: r["code"])
+
+    instruments = []
+    for elem in tree.findall(".//InstrumentList/Instrument"):
+        itype = elem.findtext("type", "")
+        iname = elem.findtext("name", "")
+        if itype:
+            instruments.append({"type": itype, "name": iname})
+    instruments.sort(key=lambda r: r["type"])
+
+    locations = []
+    for elem in tree.findall(".//LocationTree//Location"):
+        loc_code = elem.findtext("locationCode", "")
+        display = elem.findtext("displayName", "")
+        if loc_code:
+            locations.append({"code": loc_code, "display_name": display})
+    locations.sort(key=lambda r: r["code"])
+
+    return {
+        "scan_code_count": len(scan_codes),
+        "scan_codes": scan_codes,
+        "instrument_count": len(instruments),
+        "instruments": instruments,
+        "location_count": len(locations),
+        "locations": locations,
+    }
+
+
+def run_scanner(
+    profile: ProfileConfig,
+    scan_code: str,
+    instrument: str = "STK",
+    location_code: str = "STK.US.MAJOR",
+    num_rows: int = 20,
+    above_price: Optional[float] = None,
+    below_price: Optional[float] = None,
+    above_volume: Optional[int] = None,
+    market_cap_above: Optional[float] = None,
+    market_cap_below: Optional[float] = None,
+    timeout: float = 10.0,
+) -> Dict[str, object]:
+    try:
+        from ib_async import ScannerSubscription
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "ib_async is not installed. Reinstall the project with Python 3.10+ to enable IBKR API commands."
+        ) from exc
+
+    sub = ScannerSubscription(
+        instrument=instrument,
+        locationCode=location_code,
+        scanCode=scan_code.upper(),
+        numberOfRows=num_rows,
+    )
+    if above_price is not None:
+        sub.abovePrice = above_price
+    if below_price is not None:
+        sub.belowPrice = below_price
+    if above_volume is not None:
+        sub.aboveVolume = above_volume
+    if market_cap_above is not None:
+        sub.marketCapAbove = market_cap_above
+    if market_cap_below is not None:
+        sub.marketCapBelow = market_cap_below
+
+    with ib_session(profile, timeout=timeout) as ib:
+        with _suppress_ib_async_logs():
+            scan_data = ib.reqScannerData(sub, [], [])
+
+        rows = []
+        for item in scan_data:
+            contract = item.contractDetails.contract
+            details = item.contractDetails
+            rows.append(
+                {
+                    "rank": item.rank,
+                    "symbol": contract.symbol,
+                    "local_symbol": contract.localSymbol,
+                    "sec_type": contract.secType,
+                    "exchange": contract.exchange,
+                    "primary_exchange": contract.primaryExchange,
+                    "currency": contract.currency,
+                    "con_id": contract.conId,
+                    "industry": getattr(details, "industry", None) or None,
+                    "category": getattr(details, "category", None) or None,
+                    "distance": item.distance or None,
+                    "benchmark": item.benchmark or None,
+                    "projection": item.projection or None,
+                }
+            )
+
+        return {
+            "scan_code": scan_code.upper(),
+            "instrument": instrument,
+            "location_code": location_code,
+            "num_rows": num_rows,
+            "count": len(rows),
+            "rows": rows,
+        }

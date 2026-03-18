@@ -12,6 +12,8 @@ from ibkr_cli.app import (
     render_option_quotes_table,
     render_quote_table,
     render_quote_watch_table,
+    render_scanner_params_table,
+    render_scanner_results_table,
 )
 
 
@@ -141,6 +143,42 @@ class RendererTests(unittest.TestCase):
         self.assertIn("News: AAPL", text)
         self.assertIn("Apple announces new product", text)
         self.assertIn("BRFG", text)
+
+    def test_render_scanner_params_table_codes(self) -> None:
+        payload = {
+            "scan_code_count": 2,
+            "scan_codes": [
+                {"code": "MOST_ACTIVE", "display_name": "Most Active"},
+                {"code": "TOP_PERC_GAIN", "display_name": "Top % Gainers"},
+            ],
+        }
+        text = render_text(render_scanner_params_table(payload, "codes"))
+        self.assertIn("Scan Codes", text)
+        self.assertIn("MOST_ACTIVE", text)
+        self.assertIn("Top % Gainers", text)
+
+    def test_render_scanner_results_table(self) -> None:
+        payload = {
+            "scan_code": "TOP_PERC_GAIN",
+            "count": 1,
+            "rows": [
+                {
+                    "rank": 0,
+                    "symbol": "AAPL",
+                    "sec_type": "STK",
+                    "exchange": "SMART",
+                    "primary_exchange": "NASDAQ",
+                    "currency": "USD",
+                    "industry": "Technology",
+                    "benchmark": "32.50",
+                    "projection": None,
+                }
+            ],
+        }
+        text = render_text(render_scanner_results_table(payload))
+        self.assertIn("Scanner: TOP_PERC_GAIN", text)
+        self.assertIn("AAPL", text)
+        self.assertIn("Technology", text)
 
     def test_render_option_chains_table(self) -> None:
         payload = {
