@@ -3,7 +3,14 @@ import unittest
 
 from rich.console import Console
 
-from ibkr_cli.app import render_bars_table, render_quote_table, render_quote_watch_table
+from ibkr_cli.app import (
+    render_bars_table,
+    render_news_article_table,
+    render_news_headlines_table,
+    render_news_providers_table,
+    render_quote_table,
+    render_quote_watch_table,
+)
 
 
 def render_text(table) -> str:
@@ -104,3 +111,42 @@ class RendererTests(unittest.TestCase):
         self.assertIn("Bars: AAPL (5 mins, 1 D)", text)
         self.assertIn("2026-03-17T13:30:00+00:00", text)
         self.assertIn("3162", text)
+
+    def test_render_news_providers_table(self) -> None:
+        rows = [
+            {"code": "BRFG", "name": "Briefing.com"},
+            {"code": "DJNL", "name": "Dow Jones Newsletters"},
+        ]
+        text = render_text(render_news_providers_table(rows))
+        self.assertIn("News Providers", text)
+        self.assertIn("BRFG", text)
+        self.assertIn("Dow Jones", text)
+
+    def test_render_news_headlines_table(self) -> None:
+        payload = {
+            "symbol": "AAPL",
+            "count": 1,
+            "rows": [
+                {
+                    "time": "2026-03-17T15:00:00+00:00",
+                    "provider_code": "BRFG",
+                    "article_id": "BRFG$12345",
+                    "headline": "Apple announces new product",
+                }
+            ],
+        }
+        text = render_text(render_news_headlines_table(payload))
+        self.assertIn("News: AAPL", text)
+        self.assertIn("Apple announces new product", text)
+        self.assertIn("BRFG", text)
+
+    def test_render_news_article_table(self) -> None:
+        payload = {
+            "provider_code": "BRFG",
+            "article_id": "BRFG$12345",
+            "article_type": "text",
+            "article_text": "Full article content.",
+        }
+        text = render_text(render_news_article_table(payload))
+        self.assertIn("Article: BRFG$12345", text)
+        self.assertIn("BRFG", text)

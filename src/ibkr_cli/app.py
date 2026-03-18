@@ -27,6 +27,9 @@ from ibkr_cli.ib_service import (
     get_completed_orders,
     get_executions,
     get_historical_bars,
+    get_news_article,
+    get_news_headlines,
+    get_news_providers,
     get_open_orders,
     get_positions,
     get_quote_snapshot,
@@ -43,10 +46,12 @@ profile_app = typer.Typer(no_args_is_help=True, help="Manage local connection pr
 connect_app = typer.Typer(no_args_is_help=True, help="Connectivity checks for TWS or IB Gateway.")
 account_app = typer.Typer(no_args_is_help=True, help="Account-related read operations.")
 orders_app = typer.Typer(no_args_is_help=True, help="Order-related read operations.")
+news_app = typer.Typer(no_args_is_help=True, help="News headlines and articles.")
 app.add_typer(profile_app, name="profile")
 app.add_typer(connect_app, name="connect")
 app.add_typer(account_app, name="account")
 app.add_typer(orders_app, name="orders")
+app.add_typer(news_app, name="news")
 
 EXIT_CODE_GENERAL = 1
 EXIT_CODE_USAGE = 2
@@ -64,6 +69,7 @@ ERROR_ACCOUNT_QUERY_FAILED = "account_query_failed"
 ERROR_ORDER_QUERY_FAILED = "order_query_failed"
 ERROR_ORDER_OPERATION_FAILED = "order_operation_failed"
 ERROR_MARKET_DATA_REQUEST_FAILED = "market_data_request_failed"
+ERROR_NEWS_REQUEST_FAILED = "news_request_failed"
 
 
 def package_version() -> str:
@@ -1137,6 +1143,172 @@ def bars(
 
     console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
     console.print(render_bars_table(payload))
+
+
+def render_news_providers_table(rows: List[Dict[str, object]]) -> Table:
+    table = Table(title="News Providers")
+    table.add_column("Code", style="cyan")
+    table.add_column("Name")
+    for row in rows:
+        table.add_row(str(row["code"]), str(row["name"]))
+    return table
+
+
+def render_news_headlines_table(payload: Dict[str, object]) -> Table:
+    table = Table(title=f"News: {payload['symbol']} ({payload['count']} headlines)")
+    table.add_column("Time", style="cyan")
+    table.add_column("Provider")
+    table.add_column("Headline")
+    table.add_column("Article ID", style="dim")
+    for row in payload["rows"]:
+        table.add_row(
+            str(row["time"]),
+            str(row["provider_code"]),
+            str(row["headline"]),
+            str(row["article_id"]),
+        )
+    return table
+
+
+def render_news_article_table(payload: Dict[str, object]) -> Table:
+    table = Table(title=f"Article: {payload['article_id']}")
+    table.add_column("Field", style="cyan")
+    table.add_column("Value")
+    table.add_row("provider_code", str(payload["provider_code"]))
+    table.add_row("article_id", str(payload["article_id"]))
+    table.add_row("article_type", str(payload.get("article_type") or ""))
+    return table
+
+
+@news_app.command("providers")
+def news_providers(
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
+    timeout: float = typer.Option(4.0, "--timeout", min=0.1, help="API timeout in seconds."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    """List available news providers."""
+    config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
+    try:
+        payload = get_news_providers(selected_profile, timeout=timeout)
+    except Exception as exc:
+        exit_with_error(
+            f"Failed to fetch news providers via profile '{selected_name}': {exc}",
+            code=ERROR_NEWS_REQUEST_FAILED,
+            exit_code=EXIT_CODE_API,
+            json_output=json_output,
+            details={"profile": selected_name},
+        )
+        return
+
+    response = {
+        "profile": selected_name,
+        **payload,
+    }
+    if json_output:
+        print_json(response)
+        return
+
+    console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
+    console.print(render_news_providers_table(payload["rows"]))
+
+
+@news_app.command("headlines")
+def news_headlines(
+    symbol: str = typer.Argument(..., help="Ticker symbol, for example AAPL."),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
+    exchange: str = typer.Option("SMART", "--exchange", help="Exchange to use for contract qualification."),
+    currency: str = typer.Option("USD", "--currency", help="Currency to use for contract qualification."),
+    provider_codes: str = typer.Option("", "--providers", help="Comma-separated provider codes, e.g. 'BRFG,DJNL'. Empty means all."),
+    start: str = typer.Option("", "--start", help="Start time, format 'YYYYMMDD HH:MM:SS' in UTC."),
+    end: str = typer.Option("", "--end", help="End time, format 'YYYYMMDD HH:MM:SS' in UTC."),
+    limit: int = typer.Option(10, "--limit", min=1, max=300, help="Maximum number of headlines to return."),
+    timeout: float = typer.Option(10.0, "--timeout", min=0.1, help="API timeout in seconds."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    """Fetch historical news headlines for a symbol."""
+    config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
+    try:
+        payload = get_news_headlines(
+            selected_profile,
+            symbol=symbol,
+            provider_codes=provider_codes,
+            start=start,
+            end=end,
+            limit=limit,
+            exchange=exchange,
+            currency=currency,
+            timeout=timeout,
+        )
+    except Exception as exc:
+        exit_with_error(
+            f"Failed to fetch news headlines for '{symbol}' via profile '{selected_name}': {exc}",
+            code=ERROR_NEWS_REQUEST_FAILED,
+            exit_code=EXIT_CODE_API,
+            json_output=json_output,
+            details={
+                "profile": selected_name,
+                "symbol": symbol,
+                "provider_codes": provider_codes,
+            },
+        )
+        return
+
+    response = {
+        "profile": selected_name,
+        **payload,
+    }
+    if json_output:
+        print_json(response)
+        return
+
+    console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
+    console.print(render_news_headlines_table(payload))
+
+
+@news_app.command("article")
+def news_article(
+    provider_code: str = typer.Argument(..., help="News provider code, e.g. BRFG."),
+    article_id: str = typer.Argument(..., help="Article ID from a headlines response."),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
+    timeout: float = typer.Option(10.0, "--timeout", min=0.1, help="API timeout in seconds."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    """Fetch a full news article by provider code and article ID."""
+    config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
+    try:
+        payload = get_news_article(
+            selected_profile,
+            provider_code=provider_code,
+            article_id=article_id,
+            timeout=timeout,
+        )
+    except Exception as exc:
+        exit_with_error(
+            f"Failed to fetch news article '{article_id}' via profile '{selected_name}': {exc}",
+            code=ERROR_NEWS_REQUEST_FAILED,
+            exit_code=EXIT_CODE_API,
+            json_output=json_output,
+            details={
+                "profile": selected_name,
+                "provider_code": provider_code,
+                "article_id": article_id,
+            },
+        )
+        return
+
+    response = {
+        "profile": selected_name,
+        **payload,
+    }
+    if json_output:
+        print_json(response)
+        return
+
+    console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
+    console.print(render_news_article_table(payload))
+    if payload.get("article_text"):
+        console.print()
+        console.print(payload["article_text"])
 
 
 @app.command()

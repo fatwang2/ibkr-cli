@@ -246,6 +246,98 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rendered["payload"]["error"]["details"]["requested_profile"], "missing")
         self.assertIn("gateway-paper", rendered["payload"]["error"]["details"]["available_profiles"])
 
+    def test_news_providers_json(self) -> None:
+        rendered = {}
+
+        def fake_providers(profile, **kwargs):
+            return {
+                "count": 2,
+                "rows": [
+                    {"code": "BRFG", "name": "Briefing.com"},
+                    {"code": "DJNL", "name": "Dow Jones"},
+                ],
+            }
+
+        with patch.object(
+            app_module,
+            "resolve_profile_or_exit",
+            side_effect=lambda profile, json_output=False: stub_profile(),
+        ):
+            with patch.object(app_module, "get_news_providers", side_effect=fake_providers):
+                with patch.object(app_module, "print_json", side_effect=lambda payload: rendered.setdefault("payload", payload)):
+                    result = runner.invoke(app_module.app, ["news", "providers", "--json"])
+
+        self.assertEqual(result.exit_code, 0)
+        payload = rendered["payload"]
+        self.assertEqual(payload["profile"], "gateway-paper")
+        self.assertEqual(payload["count"], 2)
+        self.assertEqual(payload["rows"][0]["code"], "BRFG")
+
+    def test_news_headlines_json(self) -> None:
+        rendered = {}
+
+        def fake_headlines(profile, **kwargs):
+            return {
+                "symbol": "AAPL",
+                "local_symbol": "AAPL",
+                "exchange": "SMART",
+                "primary_exchange": "NASDAQ",
+                "currency": "USD",
+                "sec_type": "STK",
+                "con_id": 265598,
+                "provider_codes": "",
+                "limit": 10,
+                "count": 1,
+                "rows": [
+                    {
+                        "time": "2026-03-17T15:00:00+00:00",
+                        "provider_code": "BRFG",
+                        "article_id": "BRFG$12345",
+                        "headline": "Apple announces new product",
+                    }
+                ],
+            }
+
+        with patch.object(
+            app_module,
+            "resolve_profile_or_exit",
+            side_effect=lambda profile, json_output=False: stub_profile(),
+        ):
+            with patch.object(app_module, "get_news_headlines", side_effect=fake_headlines):
+                with patch.object(app_module, "print_json", side_effect=lambda payload: rendered.setdefault("payload", payload)):
+                    result = runner.invoke(app_module.app, ["news", "headlines", "AAPL", "--json"])
+
+        self.assertEqual(result.exit_code, 0)
+        payload = rendered["payload"]
+        self.assertEqual(payload["symbol"], "AAPL")
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["rows"][0]["headline"], "Apple announces new product")
+
+    def test_news_article_json(self) -> None:
+        rendered = {}
+
+        def fake_article(profile, **kwargs):
+            return {
+                "provider_code": "BRFG",
+                "article_id": "BRFG$12345",
+                "article_type": "text",
+                "article_text": "Full article content here.",
+            }
+
+        with patch.object(
+            app_module,
+            "resolve_profile_or_exit",
+            side_effect=lambda profile, json_output=False: stub_profile(),
+        ):
+            with patch.object(app_module, "get_news_article", side_effect=fake_article):
+                with patch.object(app_module, "print_json", side_effect=lambda payload: rendered.setdefault("payload", payload)):
+                    result = runner.invoke(app_module.app, ["news", "article", "BRFG", "BRFG$12345", "--json"])
+
+        self.assertEqual(result.exit_code, 0)
+        payload = rendered["payload"]
+        self.assertEqual(payload["provider_code"], "BRFG")
+        self.assertEqual(payload["article_text"], "Full article content here.")
+
     def test_quote_service_failure_returns_structured_json_error(self) -> None:
         rendered = {}
 

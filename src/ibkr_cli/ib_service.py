@@ -7,6 +7,8 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
+from datetime import datetime, timezone
+
 from ibkr_cli.config import ProfileConfig
 
 DEFAULT_ACCOUNT_SUMMARY_TAGS = (
@@ -1034,4 +1036,119 @@ def get_historical_bars(
             "rows": rows,
             "raw_error_codes": sorted({int(error["code"]) for error in raw_errors}),
             "raw_errors": raw_errors,
+        }
+
+
+def get_news_providers(
+    profile: ProfileConfig,
+    timeout: float = 4.0,
+) -> Dict[str, object]:
+    with ib_session(profile, timeout=timeout) as ib:
+        with _suppress_ib_async_logs():
+            providers = ib.reqNewsProviders()
+        rows = []
+        for provider in providers:
+            rows.append(
+                {
+                    "code": provider.code,
+                    "name": provider.name,
+                }
+            )
+        rows.sort(key=lambda row: str(row["code"]))
+        return {
+            "count": len(rows),
+            "rows": rows,
+        }
+
+
+def get_news_headlines(
+    profile: ProfileConfig,
+    symbol: str,
+    provider_codes: str = "",
+    start: str = "",
+    end: str = "",
+    limit: int = 10,
+    exchange: str = "SMART",
+    currency: str = "USD",
+    timeout: float = 10.0,
+) -> Dict[str, object]:
+    try:
+        from ib_async import Stock
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "ib_async is not installed. Reinstall the project with Python 3.10+ to enable IBKR API commands."
+        ) from exc
+
+    with ib_session(profile, timeout=timeout) as ib:
+        contract = Stock(symbol=symbol.upper(), exchange=exchange, currency=currency)
+        qualified = ib.qualifyContracts(contract)
+        if not qualified:
+            raise RuntimeError(f"Unable to qualify contract for symbol '{symbol}'.")
+
+        qualified_contract = qualified[0]
+
+        start_dt = (
+            datetime.strptime(start, "%Y%m%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            if start
+            else ""
+        )
+        end_dt = (
+            datetime.strptime(end, "%Y%m%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            if end
+            else ""
+        )
+
+        with _suppress_ib_async_logs():
+            headlines = ib.reqHistoricalNews(
+                qualified_contract.conId,
+                provider_codes,
+                start_dt,
+                end_dt,
+                limit,
+            )
+
+        rows = []
+        for headline in headlines:
+            rows.append(
+                {
+                    "time": headline.time.isoformat() if hasattr(headline.time, "isoformat") else str(headline.time),
+                    "provider_code": headline.providerCode,
+                    "article_id": headline.articleId,
+                    "headline": headline.headline,
+                }
+            )
+
+        return {
+            "symbol": qualified_contract.symbol,
+            "local_symbol": qualified_contract.localSymbol,
+            "exchange": qualified_contract.exchange,
+            "primary_exchange": qualified_contract.primaryExchange,
+            "currency": qualified_contract.currency,
+            "sec_type": qualified_contract.secType,
+            "con_id": qualified_contract.conId,
+            "provider_codes": provider_codes,
+            "limit": limit,
+            "count": len(rows),
+            "rows": rows,
+        }
+
+
+def get_news_article(
+    profile: ProfileConfig,
+    provider_code: str,
+    article_id: str,
+    timeout: float = 10.0,
+) -> Dict[str, object]:
+    with ib_session(profile, timeout=timeout) as ib:
+        with _suppress_ib_async_logs():
+            article = ib.reqNewsArticle(provider_code, article_id)
+
+        article_type = getattr(article, "articleType", None)
+        article_text = getattr(article, "articleText", None)
+
+        return {
+            "provider_code": provider_code,
+            "article_id": article_id,
+            "article_type": str(article_type) if article_type is not None else None,
+            "article_text": str(article_text) if article_text is not None else None,
         }

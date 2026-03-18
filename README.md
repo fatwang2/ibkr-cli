@@ -24,6 +24,7 @@ Once installed, simply tell your agent what you want to do (e.g., "help me insta
 - Market data snapshot quotes with live-to-delayed fallback
 - Finite quote watch mode for repeated quote updates
 - Historical bar retrieval
+- News headlines and article retrieval
 - Automatic update check with `ibkr update`
 
 ## Requirements
@@ -150,6 +151,28 @@ ibkr bars AAPL --profile gateway-paper
 ibkr bars AAPL --profile gateway-paper --duration "1 D" --bar-size "5 mins" --json
 ```
 
+### News
+
+List available news providers:
+
+```bash
+ibkr news providers --profile gateway-paper
+```
+
+Fetch headlines for a symbol:
+
+```bash
+ibkr news headlines AAPL --profile gateway-paper
+ibkr news headlines AAPL --limit 20 --providers "BRFG,DJNL" --profile gateway-paper
+ibkr news headlines AAPL --start "20260101 00:00:00" --end "20260318 00:00:00" --profile gateway-paper
+```
+
+Read a full article (using provider code and article ID from the headlines output):
+
+```bash
+ibkr news article BRFG "BRFG$12345" --profile gateway-paper
+```
+
 ## JSON output
 
 Most read and trading commands support `--json` for machine-readable output.
@@ -194,6 +217,7 @@ Current error code families include:
 - `order_query_failed`
 - `order_operation_failed`
 - `market_data_request_failed`
+- `news_request_failed`
 
 ## Operational notes
 

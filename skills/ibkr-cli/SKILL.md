@@ -1,6 +1,6 @@
 ---
 name: ibkr-cli
-description: Guide users through Interactive Brokers CLI operations — from installing IB Gateway/TWS and ibkr-cli itself, to trading stocks, monitoring accounts, and retrieving market data. Use this skill whenever the user mentions Interactive Brokers, IBKR, TWS, IB Gateway, stock trading via CLI, checking portfolios or positions, getting quotes, placing orders, or anything related to brokerage account management through a terminal. Even if the user doesn't say "ibkr" explicitly, trigger when they want to buy/sell stocks from the command line, check their brokerage account, or set up an API connection to a broker.
+description: Guide users through Interactive Brokers CLI operations — from installing IB Gateway/TWS and ibkr-cli itself, to trading stocks, monitoring accounts, retrieving market data, and reading financial news. Use this skill whenever the user mentions Interactive Brokers, IBKR, TWS, IB Gateway, stock trading via CLI, checking portfolios or positions, getting quotes, placing orders, reading stock news, or anything related to brokerage account management through a terminal. Even if the user doesn't say "ibkr" explicitly, trigger when they want to buy/sell stocks from the command line, check their brokerage account, read news about a stock, or set up an API connection to a broker.
 ---
 
 # ibkr-cli
@@ -208,6 +208,46 @@ ibkr bars AAPL --duration "1 D" --bar-size "5 mins" --profile gateway-paper
 | `--what-to-show` | `TRADES`  | Data type: `TRADES`, `MIDPOINT`          |
 | `--rth`          | default   | Regular trading hours only               |
 | `--all-hours`    | —         | Include extended hours                   |
+
+## News
+
+ibkr-cli can retrieve news headlines and full articles for any symbol from IBKR's news providers.
+
+### List news providers
+
+```bash
+ibkr news providers --profile gateway-paper
+```
+
+Shows available news sources (e.g., BRFG for Briefing.com, DJNL for Dow Jones). The user needs to know provider codes if they want to filter headlines by source.
+
+### Headlines
+
+```bash
+ibkr news headlines AAPL --profile gateway-paper
+ibkr news headlines AAPL --limit 20 --profile gateway-paper
+ibkr news headlines AAPL --providers "BRFG,DJNL" --profile gateway-paper
+ibkr news headlines AAPL --start "20260101 00:00:00" --end "20260318 00:00:00" --profile gateway-paper
+```
+
+| Flag           | Default | Description                                        |
+|----------------|---------|----------------------------------------------------|
+| `--providers`  | all     | Comma-separated provider codes to filter by         |
+| `--start`      | —       | Start time in UTC: `"YYYYMMDD HH:MM:SS"`           |
+| `--end`        | —       | End time in UTC: `"YYYYMMDD HH:MM:SS"`             |
+| `--limit`      | `10`    | Maximum number of headlines (1–300)                 |
+
+If the user asks "what's happening with AAPL" or "any news on Tesla", use `ibkr news headlines`.
+
+### Read an article
+
+Each headline includes a `provider_code` and `article_id`. To read the full article:
+
+```bash
+ibkr news article BRFG "BRFG$12345" --profile gateway-paper
+```
+
+Guide the user to first run `headlines` to get the article ID, then use `article` to read the full text.
 
 ## JSON output
 
