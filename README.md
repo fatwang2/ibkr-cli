@@ -23,16 +23,23 @@ A local-first CLI for Interactive Brokers built on top of `ib_async`, `Typer`, a
 
 ## Installation
 
-### Install in editable mode
+Install from PyPI with `pipx` so the `ibkr` command is isolated from your main Python environment:
 
 ```bash
-python -m pip install -e .
+pipx install ibkr-cli
 ```
 
-### Install with optional test dependencies
+If you prefer to install into the current Python environment:
 
 ```bash
-python -m pip install -e ".[test]"
+python -m pip install ibkr-cli
+```
+
+After installation:
+
+```bash
+ibkr --help
+ibkr --version
 ```
 
 ## Quick start
@@ -171,24 +178,6 @@ Current error code families include:
 - `order_operation_failed`
 - `market_data_request_failed`
 
-## Testing
-
-The repository includes offline tests that do not require a running IBKR session.
-
-### Run with the Python standard library
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-### Run with pytest
-
-If you installed the optional test extra:
-
-```bash
-pytest
-```
-
 ## Operational notes
 
 ### Prefer paper trading first
@@ -214,7 +203,25 @@ For validation and manual testing, prefer running commands sequentially per prof
 
 `quote` automatically falls back from live market data to delayed market data when live prices are unavailable.
 
-## Development notes
+### Command name conflicts
+
+This package installs the command `ibkr`.
+
+If your machine already has another CLI exposing the same command name, uninstall the old tool or adjust your `PATH` so that this package's `ibkr` entrypoint is the one your shell resolves first.
+
+## Development
+
+Install in editable mode:
+
+```bash
+python -m pip install -e .
+```
+
+Install in editable mode with optional test dependencies:
+
+```bash
+python -m pip install -e ".[test]"
+```
 
 Run directly from source if needed:
 
@@ -222,7 +229,13 @@ Run directly from source if needed:
 python -m ibkr_cli.app --help
 ```
 
-The packaged entrypoint is:
+Run the offline test suite:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+The packaged entrypoint for installed users is:
 
 ```bash
 ibkr --help
