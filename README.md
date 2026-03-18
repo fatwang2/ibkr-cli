@@ -2,6 +2,16 @@
 
 A local-first CLI for Interactive Brokers built on top of `ib_async`, `Typer`, and `Rich`.
 
+## Use with AI agents
+
+If you use [Claude Code](https://claude.com/claude-code), [OpenClaw](https://openclaw.ai/), or other AI agents that support the [skills](https://github.com/vercel-labs/skills) ecosystem, you can install the ibkr-cli skill to let your agent handle the entire setup and trading workflow for you:
+
+```bash
+npx skills add fatwang2/ibkr-cli
+```
+
+Once installed, simply tell your agent what you want to do (e.g., "help me install ibkr-cli and check my IBKR account") and it will guide you through everything — from installing IB Gateway to placing your first trade.
+
 ## Features
 
 - Profile-based local connection management for TWS and IB Gateway
