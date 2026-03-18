@@ -1637,7 +1637,7 @@ def update() -> None:
     current = package_version()
     console.print(f"Current version: {current}")
     console.print("Checking for updates...")
-    latest = check_for_update(current)
+    latest = check_for_update(current, skip_cache=True)
     if not latest:
         console.print("[green]Already up to date.[/green]")
         return

@@ -63,9 +63,21 @@ def _parse_version(v: str) -> tuple:
     return tuple(parts)
 
 
-def check_for_update(current_version: str) -> Optional[str]:
+def check_for_update(current_version: str, skip_cache: bool = False) -> Optional[str]:
     """Check if a newer version is available. Returns the latest version string if newer, None otherwise."""
-    latest = get_cached_latest_version()
+    if skip_cache:
+        latest = fetch_latest_version()
+        if latest:
+            try:
+                CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                CACHE_FILE.write_text(
+                    json.dumps({"version": latest, "timestamp": time.time()}),
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
+    else:
+        latest = get_cached_latest_version()
     if latest and _parse_version(latest) > _parse_version(current_version):
         return latest
     return None
