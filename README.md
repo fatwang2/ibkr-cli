@@ -24,6 +24,7 @@ Once installed, simply tell your agent what you want to do (e.g., "help me insta
 - Market data snapshot quotes with live-to-delayed fallback
 - Finite quote watch mode for repeated quote updates
 - Historical bar retrieval
+- Automatic update check with `ibkr update`
 
 ## Requirements
 
@@ -117,6 +118,14 @@ Submit only when you explicitly intend to place an order:
 ```bash
 ibkr buy AAPL 10 --submit --profile gateway-paper
 ibkr sell AAPL 10 --submit --profile gateway-paper
+```
+
+### Update
+
+The CLI automatically checks for new versions once a day. To manually check and upgrade:
+
+```bash
+ibkr update
 ```
 
 ### Market data

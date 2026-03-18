@@ -35,6 +35,7 @@ from ibkr_cli.ib_service import (
     watch_quote,
 )
 from ibkr_cli.networking import ConnectionResult, test_tcp_connection
+from ibkr_cli.version_check import check_for_update, run_update
 
 console = Console()
 app = typer.Typer(no_args_is_help=True, help="A local-first CLI for Interactive Brokers.")
@@ -88,7 +89,15 @@ def main(
         help="Show the version and exit.",
     ),
 ) -> None:
-    return None
+    try:
+        latest = check_for_update(package_version())
+        if latest:
+            console.print(
+                f"[yellow]A new version {latest} is available (current: {package_version()}). "
+                f'Run "ibkr update" to upgrade.[/yellow]'
+            )
+    except Exception:
+        pass
 
 
 def build_error_payload(
@@ -1128,6 +1137,26 @@ def bars(
 
     console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
     console.print(render_bars_table(payload))
+
+
+@app.command()
+def update() -> None:
+    """Check for and install the latest version of ibkr-cli."""
+    current = package_version()
+    console.print(f"Current version: {current}")
+    console.print("Checking for updates...")
+    latest = check_for_update(current)
+    if not latest:
+        console.print("[green]Already up to date.[/green]")
+        return
+    console.print(f"New version available: {latest}")
+    console.print("Upgrading...")
+    success, output = run_update()
+    if success:
+        console.print(f"[green]Successfully upgraded to {latest}.[/green]")
+    else:
+        console.print(f"[red]Upgrade failed:[/red] {output}")
+        raise typer.Exit(code=EXIT_CODE_GENERAL)
 
 
 if __name__ == "__main__":

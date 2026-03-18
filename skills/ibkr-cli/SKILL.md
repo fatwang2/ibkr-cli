@@ -221,6 +221,16 @@ ibkr buy AAPL 10 --preview --profile gateway-paper --json
 
 Error responses in JSON mode follow a structured format with `ok`, `error.code`, `error.message`, and `error.exit_code` fields.
 
+## Updating
+
+The CLI checks for new versions automatically once a day and prints a hint if an update is available. To upgrade:
+
+```bash
+ibkr update
+```
+
+This detects whether the user installed via pipx or pip and runs the appropriate upgrade command. If the user reports issues that may be version-related, suggest running `ibkr update` first.
+
 ## Troubleshooting
 
 When things go wrong, use `ibkr doctor` as the first diagnostic step. Common issues and how to resolve them:
