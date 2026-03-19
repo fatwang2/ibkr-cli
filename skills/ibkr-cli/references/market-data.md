@@ -1,4 +1,4 @@
-# Market Data, News, Options, and Scanner
+# Market Data, News, Options, Scanner, and Fundamentals
 
 ## Quotes
 
@@ -144,3 +144,53 @@ ibkr scanner run HOT_BY_VOLUME --above-price 10 --below-price 100 --profile gate
 | `--market-cap-below` | —                | Maximum market cap filter           |
 
 If the user asks "what stocks are moving today", "show me top gainers", or "find high dividend stocks", use the scanner commands.
+
+## Fundamentals
+
+> **Subscription required:** All fundamentals commands require a **Reuters Fundamentals** subscription (~$7/month). Subscribe via IBKR Account Management > Settings > Market Data Subscriptions (search for "Reuters Fundamentals" or "LSEG"). Without this subscription, commands will fail with error code `fundamentals_request_failed` and a message explaining how to subscribe.
+
+### Company snapshot
+
+```bash
+ibkr fundamentals snapshot AAPL --profile gateway-live
+```
+
+Returns company overview including industry, employees, key ratios (P/E, market cap, margins, ROE, etc.), officers, and business summary.
+
+### Financial summary
+
+```bash
+ibkr fundamentals summary AAPL --profile gateway-live
+```
+
+Returns key financial metrics across multiple reporting periods (TTM, annual, interim).
+
+### Full financial statements
+
+```bash
+ibkr fundamentals financials AAPL --profile gateway-live
+```
+
+Returns income statement, balance sheet, and cash flow — both annual and interim periods.
+
+### Ownership
+
+```bash
+ibkr fundamentals ownership AAPL --profile gateway-live
+```
+
+Returns institutional and insider holders with shares held and percentages.
+
+| Flag         | Default | Description                              |
+|--------------|---------|------------------------------------------|
+| `--exchange` | `SMART` | Exchange routing                         |
+| `--currency` | `USD`   | Currency for contract qualification      |
+| `--timeout`  | `10.0`  | API timeout in seconds                   |
+
+**Typical workflow:**
+
+1. `ibkr fundamentals snapshot AAPL` — company overview and key ratios
+2. `ibkr fundamentals financials AAPL` — detailed financial statements
+3. `ibkr fundamentals ownership AAPL` — who owns the stock
+
+If the user asks "what's AAPL's P/E ratio", "show me Tesla's balance sheet", "who owns MSFT", or "company financials for NVDA", use the fundamentals commands.

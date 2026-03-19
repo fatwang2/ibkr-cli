@@ -4,6 +4,7 @@ import logging
 import math
 import re
 import time
+import xml.etree.ElementTree as ET
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple
@@ -1533,3 +1534,358 @@ def run_scanner(
             "count": len(rows),
             "rows": rows,
         }
+
+
+# ---------------------------------------------------------------------------
+# Fundamental Data
+# ---------------------------------------------------------------------------
+
+_FUNDAMENTAL_SUBSCRIPTION_HINT = (
+    "This command requires a Reuters Fundamentals subscription. "
+    "Visit IBKR Account Management > Settings > Market Data Subscriptions "
+    "and search for 'Reuters Fundamentals' or 'LSEG' to enable it (~$7/month)."
+)
+
+
+def _get_fundamental_xml(
+    profile: ProfileConfig,
+    symbol: str,
+    report_type: str,
+    exchange: str = "SMART",
+    currency: str = "USD",
+    timeout: float = 10.0,
+) -> Tuple[object, str]:
+    """Fetch fundamental data XML. Returns (qualified_contract, xml_string)."""
+    try:
+        from ib_async import Stock
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "ib_async is not installed. Reinstall the project with Python 3.10+ to enable IBKR API commands."
+        ) from exc
+
+    with ib_session(profile, timeout=timeout) as ib:
+        contract = Stock(symbol=symbol.upper(), exchange=exchange, currency=currency)
+        qualified = ib.qualifyContracts(contract)
+        if not qualified:
+            raise RuntimeError(f"Unable to qualify contract for symbol '{symbol}'.")
+
+        qualified_contract = qualified[0]
+        with _suppress_ib_async_logs():
+            xml_str = ib.reqFundamentalData(qualified_contract, report_type)
+
+        if not xml_str:
+            raise RuntimeError(
+                f"No fundamental data returned for '{symbol}'. {_FUNDAMENTAL_SUBSCRIPTION_HINT}"
+            )
+
+        return qualified_contract, xml_str
+
+
+def _contract_metadata(contract: object) -> Dict[str, object]:
+    return {
+        "symbol": contract.symbol,
+        "local_symbol": contract.localSymbol,
+        "exchange": contract.exchange,
+        "primary_exchange": contract.primaryExchange,
+        "currency": contract.currency,
+        "sec_type": contract.secType,
+        "con_id": contract.conId,
+    }
+
+
+# -- ReportSnapshot parser --------------------------------------------------
+
+def _parse_report_snapshot(xml_str: str) -> Dict[str, object]:
+    root = ET.fromstring(xml_str)
+    result: Dict[str, object] = {}
+
+    # Company info
+    general = root.find(".//CoGeneralInfo")
+    if general is not None:
+        result["employees"] = general.findtext("Employees")
+        result["shares_outstanding"] = general.findtext("SharesOut")
+        result["reporting_currency"] = general.findtext("ReportingCurrency")
+
+    # Text info (business summary)
+    for text_elem in root.findall(".//TextInfo/Text"):
+        text_type = text_elem.get("Type", "")
+        if text_type == "Business Summary":
+            result["business_summary"] = (text_elem.text or "").strip()
+        elif text_type == "Financial Summary":
+            result["financial_summary"] = (text_elem.text or "").strip()
+
+    # Contact info
+    contact = root.find(".//ContactInfo")
+    if contact is not None:
+        parts = []
+        for tag in ("streetAddress", "city", "state-region", "postalCode", "country"):
+            val = contact.findtext(tag)
+            if val:
+                parts.append(val.strip())
+        if parts:
+            result["address"] = ", ".join(parts)
+
+    # Web links
+    web = root.find(".//WebLinks")
+    if web is not None:
+        result["website"] = web.findtext("webSite")
+
+    # Industry info
+    for industry in root.findall(".//PeerInfo/IndustryInfo/Industry"):
+        ind_type = industry.get("type", "")
+        if ind_type == "TRBC":
+            result["industry"] = industry.findtext("IndustryName")
+
+    # Officers
+    officers = []
+    for officer in root.findall(".//Officers/Officer"):
+        name_parts = []
+        first = officer.findtext("firstName")
+        last = officer.findtext("lastName")
+        if first:
+            name_parts.append(first.strip())
+        if last:
+            name_parts.append(last.strip())
+        titles = [t.text for t in officer.findall(".//title") if t.text]
+        if name_parts:
+            officers.append({
+                "name": " ".join(name_parts),
+                "title": ", ".join(titles) if titles else None,
+            })
+    if officers:
+        result["officers"] = officers
+
+    # Ratios
+    ratios: Dict[str, object] = {}
+    ratio_labels = {
+        "MKTCAP": "market_cap",
+        "PEEXCLXOR": "pe_ratio",
+        "PRICE2BK": "price_to_book",
+        "DIVYIELD": "dividend_yield",
+        "TTMREV": "ttm_revenue",
+        "TTMEBITD": "ttm_ebitda",
+        "TTMNIAC": "ttm_net_income",
+        "TTMEPSXCLX": "ttm_eps",
+        "TTMGROSMGN": "ttm_gross_margin",
+        "TTMOPMGN": "ttm_operating_margin",
+        "TTMNPMGN": "ttm_net_margin",
+        "TTMROEPCT": "ttm_roe",
+        "TTMROAPCT": "ttm_roa",
+        "PRICE2TANBK": "price_to_tangible_book",
+        "NHIG": "52w_high",
+        "NLOW": "52w_low",
+        "NPRICE": "price",
+        "BETA": "beta",
+        "QTOTD2EQ": "debt_to_equity",
+        "QCURRATIO": "current_ratio",
+        "QQUICKRATI": "quick_ratio",
+    }
+    for ratio_elem in root.findall(".//Ratios//Ratio"):
+        field = ratio_elem.get("FieldName", "")
+        if field in ratio_labels and ratio_elem.text:
+            try:
+                ratios[ratio_labels[field]] = round(float(ratio_elem.text), 4)
+            except ValueError:
+                ratios[ratio_labels[field]] = ratio_elem.text
+    if ratios:
+        result["ratios"] = ratios
+
+    # Forecast data
+    forecast = root.find(".//ForecastData")
+    if forecast is not None:
+        consensus = forecast.find(".//ConsRecommendation")
+        if consensus is not None:
+            rec = {}
+            for child in consensus:
+                if child.text:
+                    try:
+                        rec[child.tag.lower()] = round(float(child.text), 2)
+                    except ValueError:
+                        rec[child.tag.lower()] = child.text
+            if rec:
+                result["consensus_recommendation"] = rec
+
+    return result
+
+
+# -- ReportsFinSummary parser ------------------------------------------------
+
+def _parse_fin_summary(xml_str: str) -> Dict[str, object]:
+    root = ET.fromstring(xml_str)
+    rows: List[Dict[str, object]] = []
+
+    for elem in root.iter():
+        if elem.text and elem.text.strip() and elem.tag not in (
+            "CoID", "Source", "UpdateType", "PeriodLength",
+        ):
+            report_type = elem.get("reportType", "")
+            period = elem.get("period", "")
+            date = elem.get("date", elem.get("asofDate", ""))
+            val = elem.text.strip()
+            if not val:
+                continue
+            try:
+                numeric = round(float(val), 4)
+            except ValueError:
+                numeric = val
+
+            tag = elem.tag
+            if tag and (report_type or period or date):
+                rows.append({
+                    "metric": tag,
+                    "value": numeric,
+                    "report_type": report_type or None,
+                    "period": period or None,
+                    "date": date or None,
+                })
+
+    return {"count": len(rows), "rows": rows}
+
+
+# -- ReportsFinStatements parser ---------------------------------------------
+
+def _parse_fin_statements(xml_str: str) -> Dict[str, object]:
+    root = ET.fromstring(xml_str)
+
+    # Build COA map: coaItem -> label
+    coa_map: Dict[str, str] = {}
+    for item in root.findall(".//COAMap/mapItem"):
+        code = item.get("coaItem", "")
+        label = item.text or code
+        if code:
+            coa_map[code] = label.strip()
+
+    statement_type_labels = {"INC": "income_statement", "BAL": "balance_sheet", "CAS": "cash_flow"}
+    result: Dict[str, object] = {}
+
+    for period_group_tag, period_label in [("AnnualPeriods", "annual"), ("InterimPeriods", "interim")]:
+        period_group = root.find(f".//{period_group_tag}")
+        if period_group is None:
+            continue
+
+        fiscal_periods = period_group.findall("FiscalPeriod")
+        # Limit to most recent 4 periods
+        for fp in fiscal_periods[:4]:
+            end_date = fp.get("EndDate", "")
+            fiscal_year = fp.get("FiscalYear", "")
+            period_num = fp.get("FiscalPeriodNumber", "")
+            period_key = f"{fiscal_year}" if period_label == "annual" else f"{fiscal_year}Q{period_num}"
+
+            for stmt in fp.findall("Statement"):
+                stmt_type = stmt.get("Type", "")
+                section_name = statement_type_labels.get(stmt_type, stmt_type)
+                full_key = f"{section_name}_{period_label}"
+
+                if full_key not in result:
+                    result[full_key] = {"periods": [], "data": {}}
+
+                section = result[full_key]
+                if period_key not in section["periods"]:
+                    section["periods"].append(period_key)
+
+                for line in stmt.findall("lineItem"):
+                    code = line.get("coaCode", "")
+                    label = coa_map.get(code, code)
+                    val = line.text
+                    if val:
+                        try:
+                            val = round(float(val), 2)
+                        except ValueError:
+                            pass
+                    if label not in section["data"]:
+                        section["data"][label] = {}
+                    section["data"][label][period_key] = val
+
+    return result
+
+
+# -- ReportsOwnership parser -------------------------------------------------
+
+def _parse_ownership(xml_str: str) -> Dict[str, object]:
+    root = ET.fromstring(xml_str)
+    rows: List[Dict[str, object]] = []
+
+    for owner in root.iter("Owner"):
+        name = owner.findtext("name") or owner.findtext("Name") or ""
+        row: Dict[str, object] = {"name": name.strip()}
+        for tag in ("shares", "Shares", "sharesHeld"):
+            val = owner.findtext(tag)
+            if val:
+                try:
+                    row["shares"] = int(float(val))
+                except ValueError:
+                    row["shares"] = val
+                break
+        for tag in ("percent", "Percent", "pctHeld"):
+            val = owner.findtext(tag)
+            if val:
+                try:
+                    row["percent"] = round(float(val), 4)
+                except ValueError:
+                    row["percent"] = val
+                break
+        date_val = owner.findtext("date") or owner.findtext("Date") or owner.findtext("reportDate")
+        if date_val:
+            row["date"] = date_val
+        if row.get("name"):
+            rows.append(row)
+
+    return {"count": len(rows), "rows": rows}
+
+
+# -- Public API functions ----------------------------------------------------
+
+def get_fundamental_snapshot(
+    profile: ProfileConfig,
+    symbol: str,
+    exchange: str = "SMART",
+    currency: str = "USD",
+    timeout: float = 10.0,
+) -> Dict[str, object]:
+    qualified_contract, xml_str = _get_fundamental_xml(
+        profile, symbol, "ReportSnapshot", exchange, currency, timeout,
+    )
+    parsed = _parse_report_snapshot(xml_str)
+    return {**_contract_metadata(qualified_contract), **parsed}
+
+
+def get_fundamental_summary(
+    profile: ProfileConfig,
+    symbol: str,
+    exchange: str = "SMART",
+    currency: str = "USD",
+    timeout: float = 10.0,
+) -> Dict[str, object]:
+    qualified_contract, xml_str = _get_fundamental_xml(
+        profile, symbol, "ReportsFinSummary", exchange, currency, timeout,
+    )
+    parsed = _parse_fin_summary(xml_str)
+    return {**_contract_metadata(qualified_contract), **parsed}
+
+
+def get_fundamental_financials(
+    profile: ProfileConfig,
+    symbol: str,
+    exchange: str = "SMART",
+    currency: str = "USD",
+    timeout: float = 10.0,
+) -> Dict[str, object]:
+    qualified_contract, xml_str = _get_fundamental_xml(
+        profile, symbol, "ReportsFinStatements", exchange, currency, timeout,
+    )
+    parsed = _parse_fin_statements(xml_str)
+    return {**_contract_metadata(qualified_contract), **parsed}
+
+
+def get_fundamental_ownership(
+    profile: ProfileConfig,
+    symbol: str,
+    exchange: str = "SMART",
+    currency: str = "USD",
+    timeout: float = 10.0,
+) -> Dict[str, object]:
+    qualified_contract, xml_str = _get_fundamental_xml(
+        profile, symbol, "ReportsOwnership", exchange, currency, timeout,
+    )
+    parsed = _parse_ownership(xml_str)
+    return {**_contract_metadata(qualified_contract), **parsed}

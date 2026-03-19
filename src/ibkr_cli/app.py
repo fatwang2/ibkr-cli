@@ -26,6 +26,10 @@ from ibkr_cli.ib_service import (
     get_account_summary,
     get_completed_orders,
     get_executions,
+    get_fundamental_financials,
+    get_fundamental_ownership,
+    get_fundamental_snapshot,
+    get_fundamental_summary,
     get_historical_bars,
     get_news_article,
     get_news_headlines,
@@ -53,6 +57,7 @@ orders_app = typer.Typer(no_args_is_help=True, help="Order-related read operatio
 news_app = typer.Typer(no_args_is_help=True, help="News headlines and articles.")
 options_app = typer.Typer(no_args_is_help=True, help="Options chain and quotes.")
 scanner_app = typer.Typer(no_args_is_help=True, help="Market scanner and screener.")
+fundamentals_app = typer.Typer(no_args_is_help=True, help="Company fundamentals and financial data (requires Reuters Fundamentals subscription).")
 app.add_typer(profile_app, name="profile")
 app.add_typer(connect_app, name="connect")
 app.add_typer(account_app, name="account")
@@ -60,6 +65,7 @@ app.add_typer(orders_app, name="orders")
 app.add_typer(news_app, name="news")
 app.add_typer(options_app, name="options")
 app.add_typer(scanner_app, name="scanner")
+app.add_typer(fundamentals_app, name="fundamentals")
 
 EXIT_CODE_GENERAL = 1
 EXIT_CODE_USAGE = 2
@@ -80,6 +86,7 @@ ERROR_MARKET_DATA_REQUEST_FAILED = "market_data_request_failed"
 ERROR_NEWS_REQUEST_FAILED = "news_request_failed"
 ERROR_OPTIONS_REQUEST_FAILED = "options_request_failed"
 ERROR_SCANNER_REQUEST_FAILED = "scanner_request_failed"
+ERROR_FUNDAMENTALS_REQUEST_FAILED = "fundamentals_request_failed"
 
 
 def package_version() -> str:
@@ -1660,6 +1667,278 @@ def update() -> None:
     else:
         console.print(f"[red]Upgrade failed:[/red] {output}")
         raise typer.Exit(code=EXIT_CODE_GENERAL)
+
+
+# ---------------------------------------------------------------------------
+# Fundamentals renderers
+# ---------------------------------------------------------------------------
+
+
+def render_fundamental_snapshot_table(payload: Dict[str, object]) -> Table:
+    table = Table(title=f"Company Snapshot: {payload['symbol']}")
+    table.add_column("Field", style="cyan")
+    table.add_column("Value")
+
+    simple_fields = [
+        ("industry", "Industry"),
+        ("employees", "Employees"),
+        ("shares_outstanding", "Shares Outstanding"),
+        ("reporting_currency", "Reporting Currency"),
+        ("website", "Website"),
+        ("address", "Address"),
+    ]
+    for key, label in simple_fields:
+        val = payload.get(key)
+        if val is not None:
+            table.add_row(label, str(val))
+
+    ratios = payload.get("ratios", {})
+    ratio_display = [
+        ("price", "Price"),
+        ("market_cap", "Market Cap"),
+        ("pe_ratio", "P/E Ratio"),
+        ("price_to_book", "Price / Book"),
+        ("dividend_yield", "Dividend Yield"),
+        ("ttm_revenue", "TTM Revenue"),
+        ("ttm_ebitda", "TTM EBITDA"),
+        ("ttm_net_income", "TTM Net Income"),
+        ("ttm_eps", "TTM EPS"),
+        ("ttm_gross_margin", "TTM Gross Margin"),
+        ("ttm_operating_margin", "TTM Operating Margin"),
+        ("ttm_net_margin", "TTM Net Margin"),
+        ("ttm_roe", "TTM ROE"),
+        ("ttm_roa", "TTM ROA"),
+        ("debt_to_equity", "Debt / Equity"),
+        ("current_ratio", "Current Ratio"),
+        ("quick_ratio", "Quick Ratio"),
+        ("beta", "Beta"),
+        ("52w_high", "52W High"),
+        ("52w_low", "52W Low"),
+    ]
+    for key, label in ratio_display:
+        val = ratios.get(key)
+        if val is not None:
+            table.add_row(label, str(val))
+
+    rec = payload.get("consensus_recommendation")
+    if rec:
+        table.add_row("Consensus Recommendation", str(rec))
+
+    return table
+
+
+def render_fundamental_snapshot_officers(payload: Dict[str, object]) -> Table:
+    officers = payload.get("officers", [])
+    table = Table(title=f"Officers: {payload['symbol']} ({len(officers)})")
+    table.add_column("Name", style="cyan")
+    table.add_column("Title")
+    for officer in officers:
+        table.add_row(
+            str(officer.get("name", "")),
+            str(officer.get("title", "") or ""),
+        )
+    return table
+
+
+def render_fundamental_summary_table(payload: Dict[str, object]) -> Table:
+    table = Table(title=f"Financial Summary: {payload['symbol']} ({payload.get('count', 0)} metrics)")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", justify="right")
+    table.add_column("Report Type")
+    table.add_column("Period")
+    table.add_column("Date", style="dim")
+    for row in payload.get("rows", []):
+        table.add_row(
+            str(row.get("metric", "")),
+            str(row.get("value", "")),
+            str(row.get("report_type", "") or ""),
+            str(row.get("period", "") or ""),
+            str(row.get("date", "") or ""),
+        )
+    return table
+
+
+def render_fundamental_financials_table(payload: Dict[str, object], section_key: str, title: str) -> Table:
+    section = payload.get(section_key, {})
+    periods = section.get("periods", [])
+    data = section.get("data", {})
+    table = Table(title=f"{title}: {payload['symbol']}")
+    table.add_column("Line Item", style="cyan")
+    for period in periods:
+        table.add_column(period, justify="right")
+    for label, period_values in data.items():
+        row = [label]
+        for period in periods:
+            val = period_values.get(period)
+            row.append(str(val) if val is not None else "")
+        table.add_row(*row)
+    return table
+
+
+def render_fundamental_ownership_table(payload: Dict[str, object]) -> Table:
+    table = Table(title=f"Ownership: {payload['symbol']} ({payload.get('count', 0)} holders)")
+    table.add_column("Name", style="cyan")
+    table.add_column("Shares", justify="right")
+    table.add_column("Percent", justify="right")
+    table.add_column("Date", style="dim")
+    for row in payload.get("rows", []):
+        pct = row.get("percent")
+        pct_str = f"{pct}%" if pct is not None else ""
+        table.add_row(
+            str(row.get("name", "")),
+            str(row.get("shares", "")),
+            pct_str,
+            str(row.get("date", "") or ""),
+        )
+    return table
+
+
+# ---------------------------------------------------------------------------
+# Fundamentals commands
+# ---------------------------------------------------------------------------
+
+
+@fundamentals_app.command("snapshot")
+def fundamentals_snapshot(
+    symbol: str = typer.Argument(..., help="Ticker symbol, for example AAPL."),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
+    exchange: str = typer.Option("SMART", "--exchange", help="Exchange to use for contract qualification."),
+    currency: str = typer.Option("USD", "--currency", help="Currency to use for contract qualification."),
+    timeout: float = typer.Option(10.0, "--timeout", min=0.1, help="API timeout in seconds."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    """Company overview: ratios, officers, industry, and forecasts (requires Reuters Fundamentals subscription)."""
+    config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
+    try:
+        payload = get_fundamental_snapshot(
+            selected_profile, symbol=symbol, exchange=exchange, currency=currency, timeout=timeout,
+        )
+    except Exception as exc:
+        exit_with_error(
+            f"Failed to fetch company snapshot for '{symbol}' via profile '{selected_name}': {exc}",
+            code=ERROR_FUNDAMENTALS_REQUEST_FAILED,
+            exit_code=EXIT_CODE_API,
+            json_output=json_output,
+            details={"profile": selected_name, "symbol": symbol, "report_type": "ReportSnapshot"},
+        )
+        return
+    response = {"profile": selected_name, **payload}
+    if json_output:
+        print_json(response)
+        return
+    console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
+    console.print(render_fundamental_snapshot_table(payload))
+    if payload.get("officers"):
+        console.print(render_fundamental_snapshot_officers(payload))
+    summary = payload.get("business_summary")
+    if summary:
+        console.print(f"\n[bold]Business Summary[/bold]\n{summary[:500]}{'...' if len(summary) > 500 else ''}")
+
+
+@fundamentals_app.command("summary")
+def fundamentals_summary(
+    symbol: str = typer.Argument(..., help="Ticker symbol, for example AAPL."),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
+    exchange: str = typer.Option("SMART", "--exchange", help="Exchange to use for contract qualification."),
+    currency: str = typer.Option("USD", "--currency", help="Currency to use for contract qualification."),
+    timeout: float = typer.Option(10.0, "--timeout", min=0.1, help="API timeout in seconds."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    """Financial summary with key metrics across periods (requires Reuters Fundamentals subscription)."""
+    config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
+    try:
+        payload = get_fundamental_summary(
+            selected_profile, symbol=symbol, exchange=exchange, currency=currency, timeout=timeout,
+        )
+    except Exception as exc:
+        exit_with_error(
+            f"Failed to fetch financial summary for '{symbol}' via profile '{selected_name}': {exc}",
+            code=ERROR_FUNDAMENTALS_REQUEST_FAILED,
+            exit_code=EXIT_CODE_API,
+            json_output=json_output,
+            details={"profile": selected_name, "symbol": symbol, "report_type": "ReportsFinSummary"},
+        )
+        return
+    response = {"profile": selected_name, **payload}
+    if json_output:
+        print_json(response)
+        return
+    console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
+    console.print(render_fundamental_summary_table(payload))
+
+
+@fundamentals_app.command("financials")
+def fundamentals_financials(
+    symbol: str = typer.Argument(..., help="Ticker symbol, for example AAPL."),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
+    exchange: str = typer.Option("SMART", "--exchange", help="Exchange to use for contract qualification."),
+    currency: str = typer.Option("USD", "--currency", help="Currency to use for contract qualification."),
+    timeout: float = typer.Option(10.0, "--timeout", min=0.1, help="API timeout in seconds."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    """Full financial statements: income, balance sheet, cash flow (requires Reuters Fundamentals subscription)."""
+    config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
+    try:
+        payload = get_fundamental_financials(
+            selected_profile, symbol=symbol, exchange=exchange, currency=currency, timeout=timeout,
+        )
+    except Exception as exc:
+        exit_with_error(
+            f"Failed to fetch financial statements for '{symbol}' via profile '{selected_name}': {exc}",
+            code=ERROR_FUNDAMENTALS_REQUEST_FAILED,
+            exit_code=EXIT_CODE_API,
+            json_output=json_output,
+            details={"profile": selected_name, "symbol": symbol, "report_type": "ReportsFinStatements"},
+        )
+        return
+    response = {"profile": selected_name, **payload}
+    if json_output:
+        print_json(response)
+        return
+    console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
+    section_display = [
+        ("income_statement_annual", "Income Statement (Annual)"),
+        ("balance_sheet_annual", "Balance Sheet (Annual)"),
+        ("cash_flow_annual", "Cash Flow (Annual)"),
+        ("income_statement_interim", "Income Statement (Interim)"),
+        ("balance_sheet_interim", "Balance Sheet (Interim)"),
+        ("cash_flow_interim", "Cash Flow (Interim)"),
+    ]
+    for section_key, title in section_display:
+        if section_key in payload:
+            console.print(render_fundamental_financials_table(payload, section_key, title))
+
+
+@fundamentals_app.command("ownership")
+def fundamentals_ownership(
+    symbol: str = typer.Argument(..., help="Ticker symbol, for example AAPL."),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
+    exchange: str = typer.Option("SMART", "--exchange", help="Exchange to use for contract qualification."),
+    currency: str = typer.Option("USD", "--currency", help="Currency to use for contract qualification."),
+    timeout: float = typer.Option(10.0, "--timeout", min=0.1, help="API timeout in seconds."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    """Ownership structure: institutional and insider holders (requires Reuters Fundamentals subscription)."""
+    config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
+    try:
+        payload = get_fundamental_ownership(
+            selected_profile, symbol=symbol, exchange=exchange, currency=currency, timeout=timeout,
+        )
+    except Exception as exc:
+        exit_with_error(
+            f"Failed to fetch ownership data for '{symbol}' via profile '{selected_name}': {exc}",
+            code=ERROR_FUNDAMENTALS_REQUEST_FAILED,
+            exit_code=EXIT_CODE_API,
+            json_output=json_output,
+            details={"profile": selected_name, "symbol": symbol, "report_type": "ReportsOwnership"},
+        )
+        return
+    response = {"profile": selected_name, **payload}
+    if json_output:
+        print_json(response)
+        return
+    console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
+    console.print(render_fundamental_ownership_table(payload))
 
 
 if __name__ == "__main__":

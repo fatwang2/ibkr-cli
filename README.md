@@ -27,6 +27,7 @@ Once installed, simply tell your agent what you want to do (e.g., "help me insta
 - News headlines and article retrieval
 - Options chain lookup with expirations, strikes, and greeks
 - Market scanner for screening stocks by various criteria
+- Company fundamentals: snapshot, financial summary, full financials, ownership (requires Reuters Fundamentals subscription)
 - Automatic update check with `ibkr update`
 
 ## Requirements
@@ -215,6 +216,34 @@ ibkr scanner run HOT_BY_VOLUME --above-price 10 --below-price 100 --above-volume
 ibkr scanner run HIGH_DIVIDEND_YIELD --market-cap-above 1000000000 --profile gateway-paper
 ```
 
+### Fundamentals
+
+> **Note:** Fundamentals commands require a **Reuters Fundamentals** subscription (~$7/month). Subscribe via IBKR Account Management > Settings > Market Data Subscriptions (search for "Reuters Fundamentals" or "LSEG").
+
+Company snapshot (overview, ratios, officers, forecasts):
+
+```bash
+ibkr fundamentals snapshot AAPL --profile gateway-live
+```
+
+Financial summary (key metrics across periods):
+
+```bash
+ibkr fundamentals summary AAPL --profile gateway-live
+```
+
+Full financial statements (income, balance sheet, cash flow):
+
+```bash
+ibkr fundamentals financials AAPL --profile gateway-live
+```
+
+Ownership structure (institutional and insider holders):
+
+```bash
+ibkr fundamentals ownership AAPL --profile gateway-live
+```
+
 ## JSON output
 
 Most read and trading commands support `--json` for machine-readable output.
@@ -262,6 +291,7 @@ Current error code families include:
 - `news_request_failed`
 - `options_request_failed`
 - `scanner_request_failed`
+- `fundamentals_request_failed`
 
 ## Operational notes
 
