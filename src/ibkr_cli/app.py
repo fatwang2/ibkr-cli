@@ -1169,12 +1169,23 @@ def render_news_headlines_table(payload: Dict[str, object]) -> Table:
     table.add_column("Time", style="cyan")
     table.add_column("Provider")
     table.add_column("Headline")
+    table.add_column("Sentiment", justify="right")
+    table.add_column("Confidence", justify="right")
     table.add_column("Article ID", style="dim")
     for row in payload["rows"]:
+        sentiment = row.get("sentiment")
+        if sentiment is not None:
+            sentiment_str = f"[green]{sentiment}[/green]" if sentiment >= 0 else f"[red]{sentiment}[/red]"
+        else:
+            sentiment_str = ""
+        confidence = row.get("confidence")
+        confidence_str = str(round(confidence, 2)) if confidence is not None else ""
         table.add_row(
             str(row["time"]),
             str(row["provider_code"]),
             str(row["headline"]),
+            sentiment_str,
+            confidence_str,
             str(row["article_id"]),
         )
     return table

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -1061,6 +1062,40 @@ def get_news_providers(
         }
 
 
+_HEADLINE_META_RE = re.compile(r"\{[^}]*\}")
+
+
+def _parse_headline_metadata(raw: str) -> Dict[str, object]:
+    match = _HEADLINE_META_RE.search(raw)
+    if not match:
+        return {"headline": raw.strip()}
+    meta_str = match.group(0)[1:-1]  # strip { }
+    headline = _HEADLINE_META_RE.sub("", raw).strip()
+    result: Dict[str, object] = {"headline": headline}
+    # Parse key:value pairs where keys are single uppercase letters (A, L, K, C)
+    # and values may contain colons (e.g. L:Chinese (Simplified and Traditional),en)
+    _KEY_RE = re.compile(r"(?:^|:)([ALKC]):")
+    keys = list(_KEY_RE.finditer(meta_str))
+    for i, m in enumerate(keys):
+        key = m.group(1)
+        val_start = m.end()
+        val_end = keys[i + 1].start() if i + 1 < len(keys) else len(meta_str)
+        val = meta_str[val_start:val_end]
+        if key == "L":
+            result["language"] = val or None
+        elif key == "K" and val and val != "n/a":
+            try:
+                result["sentiment"] = round(float(val), 4)
+            except ValueError:
+                pass
+        elif key == "C" and val and val != "n/a":
+            try:
+                result["confidence"] = round(float(val), 4)
+            except ValueError:
+                pass
+    return result
+
+
 def get_news_headlines(
     profile: ProfileConfig,
     symbol: str,
@@ -1098,6 +1133,11 @@ def get_news_headlines(
             else ""
         )
 
+        if not provider_codes:
+            with _suppress_ib_async_logs():
+                providers = ib.reqNewsProviders()
+            provider_codes = "+".join(p.code for p in providers) if providers else ""
+
         with _suppress_ib_async_logs():
             headlines = ib.reqHistoricalNews(
                 qualified_contract.conId,
@@ -1108,15 +1148,22 @@ def get_news_headlines(
             )
 
         rows = []
-        for headline in headlines:
-            rows.append(
-                {
-                    "time": headline.time.isoformat() if hasattr(headline.time, "isoformat") else str(headline.time),
-                    "provider_code": headline.providerCode,
-                    "article_id": headline.articleId,
-                    "headline": headline.headline,
-                }
-            )
+        for headline in (headlines or []):
+            raw = headline.headline
+            parsed = _parse_headline_metadata(raw)
+            row: Dict[str, object] = {
+                "time": headline.time.isoformat() if hasattr(headline.time, "isoformat") else str(headline.time),
+                "provider_code": headline.providerCode,
+                "article_id": headline.articleId,
+                "headline": parsed["headline"],
+            }
+            if parsed.get("language") is not None:
+                row["language"] = parsed["language"]
+            if parsed.get("sentiment") is not None:
+                row["sentiment"] = parsed["sentiment"]
+            if parsed.get("confidence") is not None:
+                row["confidence"] = parsed["confidence"]
+            rows.append(row)
 
         return {
             "symbol": qualified_contract.symbol,
