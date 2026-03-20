@@ -34,7 +34,7 @@ When a user's request spans multiple areas (e.g., "set up ibkr and buy some AAPL
 
 These apply across all commands — keep them in mind regardless of which reference you're reading:
 
-- **Paper first**: Always default examples to `gateway-paper` or `paper` profiles. Never suggest a live profile unless the user explicitly requests it.
-- **Profile flag**: Most commands accept `--profile`. Always be explicit about which profile to use.
+- **Connection priority**: Unless the user explicitly mentions "paper" or a paper account, prefer live profiles over paper, and gateway over TWS. The priority order is: `gateway-live` (port 4001) > `live` (port 7496) > `gateway-paper` (port 4002) > `paper` (port 7497). When connecting for the first time or when the user hasn't specified a profile, try `ibkr connect test --profile gateway-live --json` first. If it fails, try the next profile in the priority list. Once a working profile is found, use it for subsequent commands.
+- **Profile flag**: Most commands accept `--profile`. Always be explicit about which profile to use. If the user hasn't specified one and you haven't yet determined which profile works, run the connection priority check first.
 - **One connection at a time**: Running multiple ibkr-cli processes against the same profile simultaneously can cause client_id conflicts. Run commands serially per profile.
 - **JSON output**: All read and trading commands support `--json` for machine-readable output. Error responses follow a structured format with `ok`, `error.code`, `error.message`, and `error.exit_code` fields.

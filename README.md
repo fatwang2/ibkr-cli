@@ -20,6 +20,7 @@ Once installed, simply tell your agent what you want to do (e.g., "help me insta
 - Order queries for open, completed, and executions
 - Safe stock order preview via IBKR what-if orders
 - Real stock order submission with explicit `--submit`
+- Order types: market, limit, stop, stop-limit, trailing stop, and bracket (take-profit + stop-loss)
 - Open order cancellation by order ID
 - Market data snapshot quotes with live-to-delayed fallback
 - Finite quote watch mode for repeated quote updates
@@ -113,15 +114,49 @@ ibkr orders cancel 12345 --profile gateway-paper
 Preview first:
 
 ```bash
-ibkr buy AAPL 10 --preview --profile gateway-paper
-ibkr sell AAPL 10 --preview --profile gateway-paper
+ibkr buy AAPL 10 --preview --profile gateway-live
+ibkr sell AAPL 10 --preview --profile gateway-live
 ```
 
 Submit only when you explicitly intend to place an order:
 
 ```bash
-ibkr buy AAPL 10 --submit --profile gateway-paper
-ibkr sell AAPL 10 --submit --profile gateway-paper
+ibkr buy AAPL 10 --submit --profile gateway-live
+ibkr sell AAPL 10 --submit --profile gateway-live
+```
+
+#### Order types
+
+Limit order:
+
+```bash
+ibkr buy AAPL 10 --type LMT --limit 150.00 --preview --profile gateway-live
+```
+
+Stop order:
+
+```bash
+ibkr sell AAPL 10 --type STP --stop 140.00 --preview --profile gateway-live
+```
+
+Stop-limit order:
+
+```bash
+ibkr sell AAPL 10 --type "STP LMT" --stop 140.00 --limit 139.50 --preview --profile gateway-live
+```
+
+Trailing stop (by dollar amount or percentage):
+
+```bash
+ibkr sell AAPL 10 --type TRAIL --trail-amount 2.00 --preview --profile gateway-live
+ibkr sell AAPL 10 --type TRAIL --trail-percent 5 --preview --profile gateway-live
+```
+
+Bracket order (take-profit + stop-loss):
+
+```bash
+ibkr buy AAPL 10 --take-profit 160.00 --stop-loss 140.00 --preview --profile gateway-live
+ibkr buy AAPL 10 --type LMT --limit 150.00 --take-profit 160.00 --stop-loss 140.00 --preview --profile gateway-live
 ```
 
 ### Update

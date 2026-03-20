@@ -215,6 +215,11 @@ class CliTests(unittest.TestCase):
                 "outside_rth": False,
                 "timeout": 4.0,
                 "account": None,
+                "stop_price": None,
+                "trail_stop_price": None,
+                "trail_percent": None,
+                "take_profit_price": None,
+                "stop_loss_price": None,
             },
         )
 

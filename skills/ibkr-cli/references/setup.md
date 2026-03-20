@@ -23,9 +23,9 @@ After installing, they need to launch the application and log in with their IBKR
 - **IB Gateway**: API is enabled by default. No action needed. Default ports — live: 4001, paper: 4002.
 - **TWS**: API is **not** enabled by default. The user must go to Edit > Global Configuration > API > Settings and check "Enable ActiveX and Socket Clients". Default ports — live: 7496, paper: 7497.
 
-### Paper trading first
+### Choosing a profile
 
-Always recommend paper trading for new users. When logging in to Gateway or TWS, they can select "Paper Trading" mode. This connects to a simulated environment where no real money is at risk — it's the right place to learn and experiment. Only suggest live profiles once the user explicitly indicates they're ready.
+When the user hasn't specified whether they want paper or live trading, verify connectivity in priority order: `gateway-live` (4001) > `live` (7496) > `gateway-paper` (4002) > `paper` (7497). Use `ibkr connect test --profile <name> --json` to check each. The first successful connection is the one to use. Only default to paper if the user explicitly says they want paper trading, or if no live connection is available.
 
 ## Step 2: Install ibkr-cli
 

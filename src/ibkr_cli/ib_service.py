@@ -508,6 +508,9 @@ def get_executions(
         }
 
 
+_SUPPORTED_ORDER_TYPES = ("MKT", "LMT", "STP", "STP LMT", "TRAIL")
+
+
 def _prepare_stock_order(
     ib: object,
     action: str,
@@ -520,9 +523,12 @@ def _prepare_stock_order(
     tif: str,
     outside_rth: bool,
     account: Optional[str],
+    stop_price: Optional[float] = None,
+    trail_stop_price: Optional[float] = None,
+    trail_percent: Optional[float] = None,
 ) -> tuple[List[str], str, object, object]:
     try:
-        from ib_async import LimitOrder, MarketOrder, Stock
+        from ib_async import LimitOrder, MarketOrder, Order, StopLimitOrder, StopOrder, Stock
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             "ib_async is not installed. Reinstall the project with Python 3.10+ to enable IBKR API commands."
@@ -536,13 +542,44 @@ def _prepare_stock_order(
         raise ValueError(f"Unsupported action '{action}'. Use BUY or SELL.")
     if quantity <= 0:
         raise ValueError("Quantity must be greater than zero.")
-    if normalized_order_type not in ("MKT", "LMT"):
-        raise ValueError(f"Unsupported order type '{order_type}'. Use MKT or LMT.")
+    if normalized_order_type not in _SUPPORTED_ORDER_TYPES:
+        types = ", ".join(_SUPPORTED_ORDER_TYPES)
+        raise ValueError(f"Unsupported order type '{order_type}'. Use one of: {types}.")
+
+    # --- per-type parameter validation ---
     if normalized_order_type == "LMT":
         if limit_price is None or limit_price <= 0:
             raise ValueError("A positive --limit price is required for LMT orders.")
-    elif limit_price is not None:
-        raise ValueError("--limit can only be used with --type LMT.")
+        if stop_price is not None:
+            raise ValueError("--stop cannot be used with --type LMT. Use STP LMT instead.")
+    elif normalized_order_type == "MKT":
+        if limit_price is not None:
+            raise ValueError("--limit cannot be used with --type MKT.")
+        if stop_price is not None:
+            raise ValueError("--stop cannot be used with --type MKT. Use STP instead.")
+    elif normalized_order_type == "STP":
+        if stop_price is None or stop_price <= 0:
+            raise ValueError("A positive --stop price is required for STP orders.")
+        if limit_price is not None:
+            raise ValueError("--limit cannot be used with --type STP. Use STP LMT instead.")
+    elif normalized_order_type == "STP LMT":
+        if stop_price is None or stop_price <= 0:
+            raise ValueError("A positive --stop price is required for STP LMT orders.")
+        if limit_price is None or limit_price <= 0:
+            raise ValueError("A positive --limit price is required for STP LMT orders.")
+    elif normalized_order_type == "TRAIL":
+        if trail_stop_price is not None and trail_percent is not None:
+            raise ValueError("Use --trail-amount or --trail-percent, not both.")
+        if trail_stop_price is None and trail_percent is None:
+            raise ValueError("--trail-amount or --trail-percent is required for TRAIL orders.")
+        if trail_stop_price is not None and trail_stop_price <= 0:
+            raise ValueError("--trail-amount must be positive.")
+        if trail_percent is not None and trail_percent <= 0:
+            raise ValueError("--trail-percent must be positive.")
+
+    # trail params should only be used with TRAIL
+    if normalized_order_type != "TRAIL" and (trail_stop_price is not None or trail_percent is not None):
+        raise ValueError("--trail-amount and --trail-percent can only be used with --type TRAIL.")
 
     managed_accounts, selected_account = _resolve_account(ib, account)
     contract = Stock(symbol=symbol.upper(), exchange=exchange, currency=currency)
@@ -551,25 +588,98 @@ def _prepare_stock_order(
         raise RuntimeError(f"Unable to qualify contract for symbol '{symbol}'.")
 
     qualified_contract = qualified[0]
+    common_kwargs = dict(tif=normalized_tif, outsideRth=outside_rth, account=selected_account)
+
     if normalized_order_type == "LMT":
-        order = LimitOrder(
-            normalized_action,
-            quantity,
-            limit_price,
-            tif=normalized_tif,
-            outsideRth=outside_rth,
-            account=selected_account,
+        order = LimitOrder(normalized_action, quantity, limit_price, **common_kwargs)
+    elif normalized_order_type == "STP":
+        order = StopOrder(normalized_action, quantity, stop_price, **common_kwargs)
+    elif normalized_order_type == "STP LMT":
+        order = StopLimitOrder(normalized_action, quantity, limit_price, stop_price, **common_kwargs)
+    elif normalized_order_type == "TRAIL":
+        order = Order(
+            orderType="TRAIL",
+            action=normalized_action,
+            totalQuantity=quantity,
+            **common_kwargs,
         )
+        if trail_stop_price is not None:
+            order.auxPrice = trail_stop_price
+        if trail_percent is not None:
+            order.trailingPercent = trail_percent
+        if stop_price is not None:
+            order.trailStopPrice = stop_price
     else:
-        order = MarketOrder(
-            normalized_action,
-            quantity,
-            tif=normalized_tif,
-            outsideRth=outside_rth,
-            account=selected_account,
-        )
+        order = MarketOrder(normalized_action, quantity, **common_kwargs)
 
     return managed_accounts, selected_account, qualified_contract, order
+
+
+def _prepare_bracket_order(
+    ib: object,
+    action: str,
+    symbol: str,
+    quantity: float,
+    exchange: str,
+    currency: str,
+    order_type: str,
+    limit_price: Optional[float],
+    tif: str,
+    outside_rth: bool,
+    account: Optional[str],
+    take_profit_price: float,
+    stop_loss_price: float,
+) -> tuple[List[str], str, object, list]:
+    try:
+        from ib_async import LimitOrder, MarketOrder, StopOrder, Stock
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "ib_async is not installed. Reinstall the project with Python 3.10+ to enable IBKR API commands."
+        ) from exc
+
+    normalized_action = action.upper()
+    normalized_order_type = order_type.upper()
+    normalized_tif = tif.upper()
+    reverse_action = "SELL" if normalized_action == "BUY" else "BUY"
+
+    if normalized_action not in ("BUY", "SELL"):
+        raise ValueError(f"Unsupported action '{action}'. Use BUY or SELL.")
+    if quantity <= 0:
+        raise ValueError("Quantity must be greater than zero.")
+    if normalized_order_type not in ("MKT", "LMT"):
+        raise ValueError("Bracket orders only support MKT or LMT as the parent order type.")
+    if normalized_order_type == "LMT" and (limit_price is None or limit_price <= 0):
+        raise ValueError("A positive --limit price is required for LMT bracket orders.")
+    if take_profit_price <= 0:
+        raise ValueError("--take-profit price must be positive.")
+    if stop_loss_price <= 0:
+        raise ValueError("--stop-loss price must be positive.")
+
+    managed_accounts, selected_account = _resolve_account(ib, account)
+    contract = Stock(symbol=symbol.upper(), exchange=exchange, currency=currency)
+    qualified = ib.qualifyContracts(contract)
+    if not qualified:
+        raise RuntimeError(f"Unable to qualify contract for symbol '{symbol}'.")
+
+    qualified_contract = qualified[0]
+    common_kwargs = dict(tif=normalized_tif, outsideRth=outside_rth, account=selected_account)
+
+    # Parent order
+    if normalized_order_type == "LMT":
+        parent = LimitOrder(normalized_action, quantity, limit_price, **common_kwargs)
+    else:
+        parent = MarketOrder(normalized_action, quantity, **common_kwargs)
+    parent.transmit = False
+
+    # Take-profit child (limit order on the opposite side)
+    take_profit = LimitOrder(reverse_action, quantity, take_profit_price, **common_kwargs)
+    take_profit.transmit = False
+
+    # Stop-loss child (stop order on the opposite side)
+    stop_loss = StopOrder(reverse_action, quantity, stop_loss_price, **common_kwargs)
+    stop_loss.transmit = True  # last child transmits the whole bracket
+
+    return managed_accounts, selected_account, qualified_contract, [parent, take_profit, stop_loss]
 
 
 def _trade_payload(
@@ -598,6 +708,10 @@ def _trade_payload(
         "quantity": _normalize_number(order.totalQuantity),
         "order_type": order.orderType,
         "limit_price": _normalize_number(order.lmtPrice),
+        "aux_price": _normalize_number(order.auxPrice),
+        "trailing_percent": _normalize_number(getattr(order, "trailingPercent", None)),
+        "trail_stop_price": _normalize_number(getattr(order, "trailStopPrice", None)),
+        "parent_id": order.parentId if order.parentId else None,
         "tif": order.tif,
         "outside_rth": bool(order.outsideRth),
         "order_id": order.orderId,
@@ -628,28 +742,58 @@ def preview_stock_order(
     outside_rth: bool = False,
     timeout: float = 4.0,
     account: Optional[str] = None,
+    stop_price: Optional[float] = None,
+    trail_stop_price: Optional[float] = None,
+    trail_percent: Optional[float] = None,
+    take_profit_price: Optional[float] = None,
+    stop_loss_price: Optional[float] = None,
 ) -> Dict[str, object]:
+    is_bracket = take_profit_price is not None or stop_loss_price is not None
     with ib_session(profile, timeout=timeout, readonly=False) as ib:
-        managed_accounts, selected_account, qualified_contract, order = _prepare_stock_order(
-            ib,
-            action=action,
-            symbol=symbol,
-            quantity=quantity,
-            exchange=exchange,
-            currency=currency,
-            order_type=order_type,
-            limit_price=limit_price,
-            tif=tif,
-            outside_rth=outside_rth,
-            account=account,
-        )
+        if is_bracket:
+            if take_profit_price is None or stop_loss_price is None:
+                raise ValueError("Bracket orders require both --take-profit and --stop-loss.")
+            managed_accounts, selected_account, qualified_contract, orders = _prepare_bracket_order(
+                ib,
+                action=action,
+                symbol=symbol,
+                quantity=quantity,
+                exchange=exchange,
+                currency=currency,
+                order_type=order_type,
+                limit_price=limit_price,
+                tif=tif,
+                outside_rth=outside_rth,
+                account=account,
+                take_profit_price=take_profit_price,
+                stop_loss_price=stop_loss_price,
+            )
+            order = orders[0]  # preview the parent order
+            order.transmit = True  # override for whatIfOrder preview
+        else:
+            managed_accounts, selected_account, qualified_contract, order = _prepare_stock_order(
+                ib,
+                action=action,
+                symbol=symbol,
+                quantity=quantity,
+                exchange=exchange,
+                currency=currency,
+                order_type=order_type,
+                limit_price=limit_price,
+                tif=tif,
+                outside_rth=outside_rth,
+                account=account,
+                stop_price=stop_price,
+                trail_stop_price=trail_stop_price,
+                trail_percent=trail_percent,
+            )
 
         matcher = lambda current_contract: current_contract is not None and getattr(current_contract, "conId", None) == qualified_contract.conId
         with _capture_ib_errors(ib, matcher) as raw_errors:
             with _suppress_ib_async_logs():
                 state = ib.whatIfOrder(qualified_contract, order)
 
-        return {
+        result = {
             "preview_only": True,
             "managed_accounts": managed_accounts,
             "selected_account": selected_account,
@@ -664,6 +808,9 @@ def preview_stock_order(
             "quantity": _normalize_number(quantity),
             "order_type": order.orderType,
             "limit_price": _normalize_number(limit_price),
+            "stop_price": _normalize_number(stop_price),
+            "aux_price": _normalize_number(order.auxPrice),
+            "trailing_percent": _normalize_number(getattr(order, "trailingPercent", None)),
             "tif": order.tif,
             "outside_rth": outside_rth,
             "status": state.status,
@@ -684,6 +831,12 @@ def preview_stock_order(
             "raw_error_codes": sorted({int(error["code"]) for error in raw_errors}),
             "raw_errors": raw_errors,
         }
+        if is_bracket:
+            result["bracket"] = {
+                "take_profit_price": _normalize_number(take_profit_price),
+                "stop_loss_price": _normalize_number(stop_loss_price),
+            }
+        return result
 
 
 def submit_stock_order(
@@ -699,28 +852,70 @@ def submit_stock_order(
     outside_rth: bool = False,
     timeout: float = 4.0,
     account: Optional[str] = None,
+    stop_price: Optional[float] = None,
+    trail_stop_price: Optional[float] = None,
+    trail_percent: Optional[float] = None,
+    take_profit_price: Optional[float] = None,
+    stop_loss_price: Optional[float] = None,
 ) -> Dict[str, object]:
+    is_bracket = take_profit_price is not None or stop_loss_price is not None
     with ib_session(profile, timeout=timeout, readonly=False) as ib:
-        managed_accounts, selected_account, qualified_contract, order = _prepare_stock_order(
-            ib,
-            action=action,
-            symbol=symbol,
-            quantity=quantity,
-            exchange=exchange,
-            currency=currency,
-            order_type=order_type,
-            limit_price=limit_price,
-            tif=tif,
-            outside_rth=outside_rth,
-            account=account,
-        )
+        if is_bracket:
+            if take_profit_price is None or stop_loss_price is None:
+                raise ValueError("Bracket orders require both --take-profit and --stop-loss.")
+            managed_accounts, selected_account, qualified_contract, orders = _prepare_bracket_order(
+                ib,
+                action=action,
+                symbol=symbol,
+                quantity=quantity,
+                exchange=exchange,
+                currency=currency,
+                order_type=order_type,
+                limit_price=limit_price,
+                tif=tif,
+                outside_rth=outside_rth,
+                account=account,
+                take_profit_price=take_profit_price,
+                stop_loss_price=stop_loss_price,
+            )
+            with _capture_ib_errors(ib) as raw_errors:
+                with _suppress_ib_async_logs():
+                    trades = []
+                    for o in orders:
+                        trade = ib.placeOrder(qualified_contract, o)
+                        trades.append(trade)
+                    ib.waitOnUpdate(timeout=min(timeout, 0.75))
 
-        with _capture_ib_errors(ib) as raw_errors:
-            with _suppress_ib_async_logs():
-                trade = ib.placeOrder(qualified_contract, order)
-                ib.waitOnUpdate(timeout=min(timeout, 0.75))
+            parent_payload = _trade_payload(trades[0], managed_accounts, selected_account, raw_errors, "submit")
+            parent_payload["bracket"] = {
+                "take_profit": _trade_payload(trades[1], managed_accounts, selected_account, [], "submit"),
+                "stop_loss": _trade_payload(trades[2], managed_accounts, selected_account, [], "submit"),
+            }
+            return parent_payload
+        else:
+            managed_accounts, selected_account, qualified_contract, order = _prepare_stock_order(
+                ib,
+                action=action,
+                symbol=symbol,
+                quantity=quantity,
+                exchange=exchange,
+                currency=currency,
+                order_type=order_type,
+                limit_price=limit_price,
+                tif=tif,
+                outside_rth=outside_rth,
+                account=account,
+                stop_price=stop_price,
+                trail_stop_price=trail_stop_price,
+                trail_percent=trail_percent,
+            )
 
-        return _trade_payload(trade, managed_accounts, selected_account, raw_errors, "submit")
+            with _capture_ib_errors(ib) as raw_errors:
+                with _suppress_ib_async_logs():
+                    trade = ib.placeOrder(qualified_contract, order)
+                    ib.waitOnUpdate(timeout=min(timeout, 0.75))
+
+            return _trade_payload(trade, managed_accounts, selected_account, raw_errors, "submit")
 
 
 def cancel_open_order(

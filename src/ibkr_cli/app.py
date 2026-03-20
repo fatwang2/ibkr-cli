@@ -380,6 +380,9 @@ def render_order_preview_table(payload: Dict[str, object]) -> Table:
         "quantity",
         "order_type",
         "limit_price",
+        "stop_price",
+        "aux_price",
+        "trailing_percent",
         "tif",
         "outside_rth",
         "status",
@@ -422,6 +425,10 @@ def render_trade_result_table(payload: Dict[str, object]) -> Table:
         "quantity",
         "order_type",
         "limit_price",
+        "aux_price",
+        "trailing_percent",
+        "trail_stop_price",
+        "parent_id",
         "tif",
         "outside_rth",
         "order_id",
@@ -856,6 +863,11 @@ def execute_trade_command(
     account: Optional[str],
     timeout: float,
     json_output: bool,
+    stop_price: Optional[float] = None,
+    trail_amount: Optional[float] = None,
+    trail_percent: Optional[float] = None,
+    take_profit: Optional[float] = None,
+    stop_loss: Optional[float] = None,
 ) -> None:
     if preview == submit:
         exit_with_error(
@@ -869,36 +881,28 @@ def execute_trade_command(
 
     config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
     try:
+        order_kwargs = dict(
+            action=action,
+            symbol=symbol,
+            quantity=quantity,
+            exchange=exchange,
+            currency=currency,
+            order_type=order_type,
+            limit_price=limit_price,
+            tif=tif,
+            outside_rth=outside_rth,
+            timeout=timeout,
+            account=account,
+            stop_price=stop_price,
+            trail_stop_price=trail_amount,
+            trail_percent=trail_percent,
+            take_profit_price=take_profit,
+            stop_loss_price=stop_loss,
+        )
         if preview:
-            payload = preview_stock_order(
-                selected_profile,
-                action=action,
-                symbol=symbol,
-                quantity=quantity,
-                exchange=exchange,
-                currency=currency,
-                order_type=order_type,
-                limit_price=limit_price,
-                tif=tif,
-                outside_rth=outside_rth,
-                timeout=timeout,
-                account=account,
-            )
+            payload = preview_stock_order(selected_profile, **order_kwargs)
         else:
-            payload = submit_stock_order(
-                selected_profile,
-                action=action,
-                symbol=symbol,
-                quantity=quantity,
-                exchange=exchange,
-                currency=currency,
-                order_type=order_type,
-                limit_price=limit_price,
-                tif=tif,
-                outside_rth=outside_rth,
-                timeout=timeout,
-                account=account,
-            )
+            payload = submit_stock_order(selected_profile, **order_kwargs)
     except Exception as exc:
         operation = "preview" if preview else "submit"
         exit_with_error(
@@ -940,8 +944,13 @@ def buy(
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
     exchange: str = typer.Option("SMART", "--exchange", help="Exchange to use for contract qualification."),
     currency: str = typer.Option("USD", "--currency", help="Currency to use for contract qualification."),
-    order_type: str = typer.Option("MKT", "--type", help="Order type: MKT or LMT."),
-    limit_price: Optional[float] = typer.Option(None, "--limit", help="Limit price for LMT orders."),
+    order_type: str = typer.Option("MKT", "--type", help="Order type: MKT, LMT, STP, STP LMT, or TRAIL."),
+    limit_price: Optional[float] = typer.Option(None, "--limit", help="Limit price (required for LMT / STP LMT)."),
+    stop_price: Optional[float] = typer.Option(None, "--stop", help="Stop trigger price (required for STP / STP LMT, optional for TRAIL)."),
+    trail_amount: Optional[float] = typer.Option(None, "--trail-amount", help="Trailing amount in dollars (for TRAIL orders)."),
+    trail_percent: Optional[float] = typer.Option(None, "--trail-percent", help="Trailing percentage (for TRAIL orders)."),
+    take_profit: Optional[float] = typer.Option(None, "--take-profit", help="Take-profit limit price (creates a bracket order)."),
+    stop_loss: Optional[float] = typer.Option(None, "--stop-loss", help="Stop-loss price (creates a bracket order)."),
     tif: str = typer.Option("DAY", "--tif", help="Time in force."),
     outside_rth: bool = typer.Option(False, "--outside-rth", help="Allow execution outside regular trading hours."),
     preview: bool = typer.Option(False, "--preview", help="Run a what-if preview instead of placing an order."),
@@ -951,21 +960,10 @@ def buy(
     json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
 ) -> None:
     execute_trade_command(
-        "BUY",
-        symbol,
-        quantity,
-        profile,
-        exchange,
-        currency,
-        order_type,
-        limit_price,
-        tif,
-        outside_rth,
-        preview,
-        submit,
-        account,
-        timeout,
-        json_output,
+        "BUY", symbol, quantity, profile, exchange, currency, order_type, limit_price,
+        tif, outside_rth, preview, submit, account, timeout, json_output,
+        stop_price=stop_price, trail_amount=trail_amount, trail_percent=trail_percent,
+        take_profit=take_profit, stop_loss=stop_loss,
     )
 
 
@@ -976,8 +974,13 @@ def sell(
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
     exchange: str = typer.Option("SMART", "--exchange", help="Exchange to use for contract qualification."),
     currency: str = typer.Option("USD", "--currency", help="Currency to use for contract qualification."),
-    order_type: str = typer.Option("MKT", "--type", help="Order type: MKT or LMT."),
-    limit_price: Optional[float] = typer.Option(None, "--limit", help="Limit price for LMT orders."),
+    order_type: str = typer.Option("MKT", "--type", help="Order type: MKT, LMT, STP, STP LMT, or TRAIL."),
+    limit_price: Optional[float] = typer.Option(None, "--limit", help="Limit price (required for LMT / STP LMT)."),
+    stop_price: Optional[float] = typer.Option(None, "--stop", help="Stop trigger price (required for STP / STP LMT, optional for TRAIL)."),
+    trail_amount: Optional[float] = typer.Option(None, "--trail-amount", help="Trailing amount in dollars (for TRAIL orders)."),
+    trail_percent: Optional[float] = typer.Option(None, "--trail-percent", help="Trailing percentage (for TRAIL orders)."),
+    take_profit: Optional[float] = typer.Option(None, "--take-profit", help="Take-profit limit price (creates a bracket order)."),
+    stop_loss: Optional[float] = typer.Option(None, "--stop-loss", help="Stop-loss price (creates a bracket order)."),
     tif: str = typer.Option("DAY", "--tif", help="Time in force."),
     outside_rth: bool = typer.Option(False, "--outside-rth", help="Allow execution outside regular trading hours."),
     preview: bool = typer.Option(False, "--preview", help="Run a what-if preview instead of placing an order."),
@@ -987,21 +990,10 @@ def sell(
     json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
 ) -> None:
     execute_trade_command(
-        "SELL",
-        symbol,
-        quantity,
-        profile,
-        exchange,
-        currency,
-        order_type,
-        limit_price,
-        tif,
-        outside_rth,
-        preview,
-        submit,
-        account,
-        timeout,
-        json_output,
+        "SELL", symbol, quantity, profile, exchange, currency, order_type, limit_price,
+        tif, outside_rth, preview, submit, account, timeout, json_output,
+        stop_price=stop_price, trail_amount=trail_amount, trail_percent=trail_percent,
+        take_profit=take_profit, stop_loss=stop_loss,
     )
 
 
