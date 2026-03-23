@@ -880,10 +880,15 @@ def submit_stock_order(
             )
             with _capture_ib_errors(ib) as raw_errors:
                 with _suppress_ib_async_logs():
-                    trades = []
-                    for o in orders:
-                        trade = ib.placeOrder(qualified_contract, o)
-                        trades.append(trade)
+                    parent_order, tp_order, sl_order = orders
+                    # Place parent first to obtain its orderId
+                    parent_trade = ib.placeOrder(qualified_contract, parent_order)
+                    # Link children to parent via parentId
+                    tp_order.parentId = parent_trade.order.orderId
+                    sl_order.parentId = parent_trade.order.orderId
+                    tp_trade = ib.placeOrder(qualified_contract, tp_order)
+                    sl_trade = ib.placeOrder(qualified_contract, sl_order)
+                    trades = [parent_trade, tp_trade, sl_trade]
                     ib.waitOnUpdate(timeout=min(timeout, 0.75))
 
             parent_payload = _trade_payload(trades[0], managed_accounts, selected_account, raw_errors, "submit")
