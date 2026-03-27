@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import platform
+import subprocess
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -56,7 +57,7 @@ from ibkr_cli.ib_service import (
     watch_quote,
 )
 from ibkr_cli.networking import ConnectionResult, test_tcp_connection
-from ibkr_cli.version_check import check_for_update, run_update
+from ibkr_cli.version_check import _parse_version, check_for_update, run_update
 
 console = Console()
 app = typer.Typer(no_args_is_help=True, help="A local-first CLI for Interactive Brokers.")
@@ -1722,11 +1723,19 @@ def update() -> None:
     console.print(f"New version available: {latest}")
     console.print("Upgrading...")
     success, output = run_update()
-    if success:
-        console.print(f"[green]Successfully upgraded to {latest}.[/green]")
-    else:
+    if not success:
         console.print(f"[red]Upgrade failed:[/red] {output}")
         raise typer.Exit(code=EXIT_CODE_GENERAL)
+    # Verify the upgrade in a new process (importlib.metadata caches in-process)
+    result = subprocess.run(
+        ["ibkr", "--version"], capture_output=True, text=True, timeout=10,
+    )
+    new_version = result.stdout.strip() if result.returncode == 0 else None
+    if not new_version or _parse_version(new_version) <= _parse_version(current):
+        console.print(f"[red]Upgrade failed:[/red] version is still {current} after upgrade.")
+        console.print(f"[dim]Installer output: {output}[/dim]")
+        raise typer.Exit(code=EXIT_CODE_GENERAL)
+    console.print(f"[green]Successfully upgraded to {new_version}.[/green]")
 
 
 # ---------------------------------------------------------------------------

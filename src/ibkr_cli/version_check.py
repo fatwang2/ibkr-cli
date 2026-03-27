@@ -84,14 +84,21 @@ def check_for_update(current_version: str, skip_cache: bool = False) -> Optional
 
 
 def detect_installer() -> str:
-    """Detect whether ibkr-cli was installed via pipx or pip."""
-    if shutil.which("pipx"):
-        result = subprocess.run(
-            ["pipx", "list", "--short"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode == 0 and "ibkr-cli" in result.stdout:
+    """Detect whether the *currently running* ibkr was installed via pipx or pip.
+
+    Checks whether sys.executable lives inside a pipx venv rather than merely
+    checking whether pipx has the package — the two can differ when both a pip
+    and a pipx installation coexist.
+    """
+    try:
+        # sys.executable keeps the symlink path (e.g. …/pipx/venvs/ibkr-cli/bin/python);
+        # do NOT resolve() — the real path points to the system Python, losing the
+        # pipx path components.
+        parts = Path(sys.executable).parts
+        if "pipx" in parts and "venvs" in parts:
             return "pipx"
+    except (OSError, ValueError):
+        pass
     return "pip"
 
 
