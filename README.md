@@ -22,6 +22,7 @@ Once installed, simply tell your agent what you want to do (e.g., "help me insta
 - Real stock order submission with explicit `--submit`
 - Order types: market, limit, stop, stop-limit, trailing stop, and bracket (take-profit + stop-loss)
 - Open order cancellation by order ID
+- Order modification (price, quantity, type, etc.) without cancel-and-resubmit
 - Market data snapshot quotes with live-to-delayed fallback
 - Finite quote watch mode for repeated quote updates
 - Historical bar retrieval
@@ -107,6 +108,7 @@ ibkr orders open --profile gateway-paper
 ibkr orders completed --profile gateway-paper
 ibkr orders executions --profile gateway-paper
 ibkr orders cancel 12345 --profile gateway-paper
+ibkr orders modify 12345 --limit 150.50 --profile gateway-paper
 ```
 
 ### Trading

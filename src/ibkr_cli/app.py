@@ -23,6 +23,7 @@ from ibkr_cli.ib_service import (
     ApiConnectionResult,
     cancel_open_order,
     check_api_connection,
+    modify_order,
     get_account_summary,
     get_completed_orders,
     get_executions,
@@ -1011,6 +1012,66 @@ def orders_cancel(
     except Exception as exc:
         exit_with_error(
             f"Failed to cancel order '{order_id}' via profile '{selected_name}': {exc}",
+            code=ERROR_ORDER_OPERATION_FAILED,
+            exit_code=EXIT_CODE_API,
+            json_output=json_output,
+            details={"profile": selected_name, "order_id": order_id, "account": account},
+        )
+        return
+
+    response = {
+        "profile": selected_name,
+        **payload,
+    }
+    if json_output:
+        print_json(response)
+        return
+
+    console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
+    console.print(render_trade_result_table(payload))
+
+
+@orders_app.command("modify")
+def orders_modify(
+    order_id: int = typer.Argument(..., help="IBKR order ID to modify."),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
+    limit_price: Optional[float] = typer.Option(None, "--limit", help="New limit price."),
+    stop_price: Optional[float] = typer.Option(None, "--stop", help="New stop / aux price."),
+    quantity: Optional[float] = typer.Option(None, "--quantity", "-q", help="New order quantity."),
+    order_type: Optional[str] = typer.Option(None, "--type", help="New order type: MKT, LMT, STP, STP LMT, TRAIL."),
+    tif: Optional[str] = typer.Option(None, "--tif", help="New time-in-force: DAY, GTC, IOC, etc."),
+    outside_rth: Optional[bool] = typer.Option(None, "--outside-rth", help="Allow execution outside regular trading hours."),
+    account: Optional[str] = typer.Option(None, "--account", help="IBKR account identifier."),
+    timeout: float = typer.Option(4.0, "--timeout", min=0.1, help="API timeout in seconds."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    if all(v is None for v in (limit_price, stop_price, quantity, order_type, tif, outside_rth)):
+        exit_with_error(
+            "Provide at least one field to modify (e.g. --limit, --stop, --quantity, --type, --tif, --outside-rth).",
+            code=ERROR_INVALID_ARGUMENTS,
+            exit_code=EXIT_CODE_USAGE,
+            json_output=json_output,
+            details={"order_id": order_id},
+        )
+        return
+
+    config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
+    try:
+        payload = modify_order(
+            selected_profile,
+            order_id=order_id,
+            limit_price=limit_price,
+            aux_price=stop_price,
+            quantity=quantity,
+            order_type=order_type,
+            tif=tif,
+            outside_rth=outside_rth,
+            timeout=timeout,
+            account=account,
+        )
+    except Exception as exc:
+        exit_with_error(
+            f"Failed to modify order '{order_id}' via profile '{selected_name}': {exc}",
             code=ERROR_ORDER_OPERATION_FAILED,
             exit_code=EXIT_CODE_API,
             json_output=json_output,

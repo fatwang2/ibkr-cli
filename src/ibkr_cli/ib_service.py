@@ -959,6 +959,62 @@ def cancel_open_order(
         return _trade_payload(cancelled_trade, managed_accounts, selected_account, raw_errors, "cancel")
 
 
+def modify_order(
+    profile: ProfileConfig,
+    order_id: int,
+    limit_price: Optional[float] = None,
+    aux_price: Optional[float] = None,
+    quantity: Optional[float] = None,
+    order_type: Optional[str] = None,
+    tif: Optional[str] = None,
+    outside_rth: Optional[bool] = None,
+    timeout: float = 4.0,
+    account: Optional[str] = None,
+) -> Dict[str, object]:
+    with ib_session(profile, timeout=timeout, readonly=False) as ib:
+        managed_accounts = list(ib.managedAccounts())
+        if account and managed_accounts and account not in managed_accounts:
+            available = ", ".join(managed_accounts)
+            raise ValueError(f"Unknown account '{account}'. Available accounts: {available}")
+
+        trades = list(ib.reqAllOpenOrders())
+        target_trade = None
+        for trade in trades:
+            if trade.order.orderId != order_id:
+                continue
+            if account and trade.order.account != account:
+                continue
+            target_trade = trade
+            break
+
+        if target_trade is None:
+            raise RuntimeError(f"Open order '{order_id}' was not found.")
+
+        selected_account = target_trade.order.account
+        order = target_trade.order
+        contract = target_trade.contract
+
+        if limit_price is not None:
+            order.lmtPrice = limit_price
+        if aux_price is not None:
+            order.auxPrice = aux_price
+        if quantity is not None:
+            order.totalQuantity = quantity
+        if order_type is not None:
+            order.orderType = order_type
+        if tif is not None:
+            order.tif = tif
+        if outside_rth is not None:
+            order.outsideRth = outside_rth
+
+        with _capture_ib_errors(ib) as raw_errors:
+            with _suppress_ib_async_logs():
+                modified_trade = ib.placeOrder(contract, order)
+                ib.waitOnUpdate(timeout=min(timeout, 0.75))
+
+        return _trade_payload(modified_trade, managed_accounts, selected_account, raw_errors, "modify")
+
+
 def _quote_snapshot_payload(current_ticker: object, current_contract: object) -> Dict[str, object]:
     observed_at = getattr(current_ticker, "time", None) or getattr(current_ticker, "rtTime", None)
     return {

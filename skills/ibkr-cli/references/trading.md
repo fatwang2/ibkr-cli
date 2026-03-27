@@ -114,4 +114,17 @@ ibkr orders executions --profile <profile>   # Execution details (fills)
 ibkr orders cancel <order_id> --profile <profile>
 ```
 
+### Modify an order
+
+```bash
+ibkr orders modify <order_id> --limit 150.50 --profile <profile>
+ibkr orders modify <order_id> --stop 145.00 --profile <profile>
+ibkr orders modify <order_id> --quantity 200 --profile <profile>
+ibkr orders modify <order_id> --limit 150.50 --quantity 200 --profile <profile>
+```
+
+Supported fields: `--limit` (limit price), `--stop` (stop/aux price), `--quantity`, `--type` (order type), `--tif` (time-in-force), `--outside-rth`. At least one field must be provided.
+
+This works for all order types including bracket order children — use the child order's ID from `orders open` to modify take-profit or stop-loss prices individually.
+
 The order_id comes from the `orders open` output. Guide the user to check open orders first if they don't know their order ID.
