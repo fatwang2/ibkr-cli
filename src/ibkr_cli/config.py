@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Dict, Literal, Optional, Tuple
 
@@ -14,6 +15,8 @@ from pydantic import BaseModel, Field
 CONFIG_DIR = Path(user_config_dir("ibkr-cli", "ibkr"))
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 
+FLEX_BASE_URL = "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService"
+
 
 class ProfileConfig(BaseModel):
     host: str = "127.0.0.1"
@@ -22,9 +25,15 @@ class ProfileConfig(BaseModel):
     mode: Literal["paper", "live"] = "paper"
 
 
+class FlexConfig(BaseModel):
+    token: str = ""
+    query_id: str = ""
+
+
 class AppConfig(BaseModel):
     default_profile: str = "paper"
     profiles: Dict[str, ProfileConfig] = Field(default_factory=dict)
+    flex: FlexConfig = Field(default_factory=FlexConfig)
 
 
 def default_profiles() -> Dict[str, ProfileConfig]:
@@ -85,7 +94,39 @@ def serialize_config(config: AppConfig) -> str:
                 "",
             ]
         )
+    if config.flex.token or config.flex.query_id:
+        lines.extend(
+            [
+                "[flex]",
+                f'token = "{config.flex.token}"',
+                f'query_id = "{config.flex.query_id}"',
+                "",
+            ]
+        )
     return "\n".join(lines).rstrip() + "\n"
+
+
+def get_flex_config(config: AppConfig) -> FlexConfig:
+    """Return FlexConfig with environment variable overrides applied."""
+    token = os.environ.get("IBKR_FLEX_TOKEN") or config.flex.token
+    query_id = os.environ.get("IBKR_FLEX_QUERY_ID") or config.flex.query_id
+    return FlexConfig(token=token, query_id=query_id)
+
+
+def set_config_value(config: AppConfig, key: str, value: str) -> None:
+    """Set a config value by dotted key (e.g. 'flex.token', 'default_profile')."""
+    parts = key.split(".", 1)
+    if len(parts) == 2 and parts[0] == "flex":
+        field = parts[1]
+        if field not in ("token", "query_id"):
+            raise KeyError(f"Unknown flex config key: {field}")
+        setattr(config.flex, field, value)
+    elif key == "default_profile":
+        if value not in config.profiles:
+            raise ValueError(f"Profile '{value}' does not exist.")
+        config.default_profile = value
+    else:
+        raise KeyError(f"Unknown config key: {key}")
 
 
 def profile_to_dict(name: str, profile: ProfileConfig, is_default: bool = False) -> Dict[str, object]:

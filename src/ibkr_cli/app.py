@@ -12,12 +12,21 @@ from rich.table import Table
 from ibkr_cli.config import (
     CONFIG_FILE,
     AppConfig,
+    FlexConfig,
     ProfileConfig,
     default_config,
+    get_flex_config,
     get_profile,
     load_config,
     profile_to_dict,
     save_config,
+    set_config_value,
+)
+from ibkr_cli.flex_service import (
+    get_flex_cash_transactions,
+    get_flex_pnl,
+    get_flex_trades,
+    get_flex_transfers,
 )
 from ibkr_cli.ib_service import (
     ApiConnectionResult,
@@ -59,6 +68,7 @@ news_app = typer.Typer(no_args_is_help=True, help="News headlines and articles."
 options_app = typer.Typer(no_args_is_help=True, help="Options chain and quotes.")
 scanner_app = typer.Typer(no_args_is_help=True, help="Market scanner and screener.")
 fundamentals_app = typer.Typer(no_args_is_help=True, help="Company fundamentals and financial data (requires Reuters Fundamentals subscription).")
+config_app = typer.Typer(no_args_is_help=True, help="View and update CLI configuration.")
 app.add_typer(profile_app, name="profile")
 app.add_typer(connect_app, name="connect")
 app.add_typer(account_app, name="account")
@@ -67,6 +77,7 @@ app.add_typer(news_app, name="news")
 app.add_typer(options_app, name="options")
 app.add_typer(scanner_app, name="scanner")
 app.add_typer(fundamentals_app, name="fundamentals")
+app.add_typer(config_app, name="config")
 
 EXIT_CODE_GENERAL = 1
 EXIT_CODE_USAGE = 2
@@ -88,6 +99,7 @@ ERROR_NEWS_REQUEST_FAILED = "news_request_failed"
 ERROR_OPTIONS_REQUEST_FAILED = "options_request_failed"
 ERROR_SCANNER_REQUEST_FAILED = "scanner_request_failed"
 ERROR_FUNDAMENTALS_REQUEST_FAILED = "fundamentals_request_failed"
+ERROR_FLEX_REQUEST_FAILED = "flex_request_failed"
 
 
 def package_version() -> str:
@@ -669,11 +681,6 @@ def connect_test(
             console.print(render_api_connection_result(api_result))
     if connectivity_failed:
         raise typer.Exit(code=EXIT_CODE_CONNECTIVITY)
-
-
-@app.command("config-path")
-def config_path() -> None:
-    console.print(str(Path(CONFIG_FILE)))
 
 
 @account_app.command("summary")
@@ -1992,6 +1999,305 @@ def fundamentals_ownership(
         return
     console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
     console.print(render_fundamental_ownership_table(payload))
+
+
+def resolve_flex_or_exit(json_output: bool = False) -> tuple[AppConfig, FlexConfig]:
+    config, _ = load_or_exit(json_output=json_output)
+    flex = get_flex_config(config)
+    if not flex.token or not flex.query_id:
+        exit_with_error(
+            "Flex Queries not configured. Run: ibkr config set flex.token <TOKEN> && ibkr config set flex.query_id <QUERY_ID>",
+            code=ERROR_FLEX_REQUEST_FAILED,
+            exit_code=EXIT_CODE_CONFIG,
+            json_output=json_output,
+        )
+    return config, flex
+
+
+# ── Flex renderers ───────────────────────────────────────────
+
+
+def render_flex_trades_table(rows: Sequence[Dict[str, object]]) -> Table:
+    table = Table(title="Trade History (Flex)")
+    table.add_column("Date", style="cyan")
+    table.add_column("Symbol", style="green")
+    table.add_column("Side")
+    table.add_column("Qty", justify="right")
+    table.add_column("Price", justify="right")
+    table.add_column("Proceeds", justify="right")
+    table.add_column("Commission", justify="right")
+    table.add_column("Net Cash", justify="right")
+    table.add_column("Realized P&L", justify="right")
+    table.add_column("Ccy")
+    for r in rows:
+        pnl = r.get("realized_pnl", 0)
+        pnl_style = "green" if pnl and float(str(pnl)) > 0 else "red" if pnl and float(str(pnl)) < 0 else ""
+        table.add_row(
+            str(r.get("trade_date") or ""),
+            str(r.get("symbol") or ""),
+            str(r.get("buy_sell") or ""),
+            str(r.get("quantity") or ""),
+            str(r.get("price") or ""),
+            str(r.get("proceeds") or ""),
+            str(r.get("commission") or ""),
+            str(r.get("net_cash") or ""),
+            f"[{pnl_style}]{pnl}[/{pnl_style}]" if pnl_style else str(pnl),
+            str(r.get("currency") or ""),
+        )
+    return table
+
+
+def render_flex_pnl_table(payload: Dict[str, object]) -> Table:
+    table = Table(title="P&L by Symbol (Flex)")
+    table.add_column("Symbol", style="green")
+    table.add_column("Description")
+    table.add_column("Realized P&L", justify="right")
+    table.add_column("Unrealized P&L", justify="right")
+    table.add_column("Total P&L", justify="right")
+    for r in payload.get("rows", []):
+        def _pnl_cell(val: object) -> str:
+            v = float(str(val)) if val else 0
+            style = "green" if v > 0 else "red" if v < 0 else ""
+            text = f"{v:,.2f}"
+            return f"[{style}]{text}[/{style}]" if style else text
+
+        table.add_row(
+            str(r.get("symbol") or ""),
+            str(r.get("description") or ""),
+            _pnl_cell(r.get("realized_pnl")),
+            _pnl_cell(r.get("unrealized_pnl")),
+            _pnl_cell(r.get("total_pnl")),
+        )
+    table.add_section()
+    total_r = payload.get("total_realized", 0)
+    total_u = payload.get("total_unrealized", 0)
+    total = payload.get("total_pnl", 0)
+
+    def _fmt(v: object) -> str:
+        fv = float(str(v)) if v else 0
+        style = "green" if fv > 0 else "red" if fv < 0 else ""
+        text = f"{fv:,.2f}"
+        return f"[bold {style}]{text}[/bold {style}]" if style else f"[bold]{text}[/bold]"
+
+    table.add_row("[bold]TOTAL[/bold]", "", _fmt(total_r), _fmt(total_u), _fmt(total))
+    return table
+
+
+def render_flex_transfers_table(rows: Sequence[Dict[str, object]]) -> Table:
+    table = Table(title="Fund Transfers (Flex)")
+    table.add_column("Date", style="cyan")
+    table.add_column("Type")
+    table.add_column("Amount", justify="right")
+    table.add_column("Ccy")
+    table.add_column("Description")
+    for r in rows:
+        amount = float(str(r.get("amount") or 0))
+        style = "green" if amount > 0 else "red" if amount < 0 else ""
+        amount_str = f"{amount:,.2f}"
+        table.add_row(
+            str(r.get("date") or ""),
+            str(r.get("type") or ""),
+            f"[{style}]{amount_str}[/{style}]" if style else amount_str,
+            str(r.get("currency") or ""),
+            str(r.get("description") or ""),
+        )
+    return table
+
+
+def render_flex_cash_transactions_table(rows: Sequence[Dict[str, object]]) -> Table:
+    table = Table(title="Cash Transactions (Flex)")
+    table.add_column("Date", style="cyan")
+    table.add_column("Type")
+    table.add_column("Symbol", style="green")
+    table.add_column("Description")
+    table.add_column("Amount", justify="right")
+    table.add_column("Ccy")
+    for r in rows:
+        amount = float(str(r.get("amount") or 0))
+        style = "green" if amount > 0 else "red" if amount < 0 else ""
+        amount_str = f"{amount:,.2f}"
+        table.add_row(
+            str(r.get("date") or ""),
+            str(r.get("type") or ""),
+            str(r.get("symbol") or ""),
+            str(r.get("description") or ""),
+            f"[{style}]{amount_str}[/{style}]" if style else amount_str,
+            str(r.get("currency") or ""),
+        )
+    return table
+
+
+# ── Historical data commands (via Flex Queries) ─────────────
+
+
+@app.command()
+def trades(
+    days: int = typer.Option(30, "--days", "-d", help="Number of days to look back."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    """Historical trade records.
+
+    Data is sourced from IBKR Flex Queries and may be delayed up to T-1.
+    Requires flex.token and flex.query_id to be configured (see: ibkr config set).
+    """
+    config, flex = resolve_flex_or_exit(json_output=json_output)
+    try:
+        payload = get_flex_trades(flex, days=days)
+    except Exception as exc:
+        exit_with_error(
+            f"Failed to fetch trades: {exc}",
+            code=ERROR_FLEX_REQUEST_FAILED,
+            exit_code=EXIT_CODE_API,
+            json_output=json_output,
+        )
+        return
+    if json_output:
+        print_json(payload)
+        return
+    console.print(render_flex_trades_table(payload["rows"]))
+    console.print(f"\n[dim]{payload['count']} trade(s) in the last {days} day(s) · data up to T-1[/dim]")
+
+
+@app.command()
+def pnl(
+    days: int = typer.Option(30, "--days", "-d", help="Number of days to look back."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    """Realized and unrealized P&L by symbol.
+
+    Data is sourced from IBKR Flex Queries and may be delayed up to T-1.
+    Requires flex.token and flex.query_id to be configured (see: ibkr config set).
+    """
+    config, flex = resolve_flex_or_exit(json_output=json_output)
+    try:
+        payload = get_flex_pnl(flex, days=days)
+    except Exception as exc:
+        exit_with_error(
+            f"Failed to fetch P&L: {exc}",
+            code=ERROR_FLEX_REQUEST_FAILED,
+            exit_code=EXIT_CODE_API,
+            json_output=json_output,
+        )
+        return
+    if json_output:
+        print_json(payload)
+        return
+    console.print(render_flex_pnl_table(payload))
+
+
+@app.command()
+def transfers(
+    days: int = typer.Option(90, "--days", "-d", help="Number of days to look back."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    """Fund deposits, withdrawals, and transfers.
+
+    Data is sourced from IBKR Flex Queries and may be delayed up to T-1.
+    Requires flex.token and flex.query_id to be configured (see: ibkr config set).
+    """
+    config, flex = resolve_flex_or_exit(json_output=json_output)
+    try:
+        payload = get_flex_transfers(flex, days=days)
+    except Exception as exc:
+        exit_with_error(
+            f"Failed to fetch transfers: {exc}",
+            code=ERROR_FLEX_REQUEST_FAILED,
+            exit_code=EXIT_CODE_API,
+            json_output=json_output,
+        )
+        return
+    if json_output:
+        print_json(payload)
+        return
+    console.print(render_flex_transfers_table(payload["rows"]))
+    console.print(f"\n[dim]{payload['count']} transfer(s) in the last {days} day(s) · data up to T-1[/dim]")
+
+
+@app.command()
+def dividends(
+    days: int = typer.Option(30, "--days", "-d", help="Number of days to look back."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
+) -> None:
+    """Dividends, interest, withholding tax, and other cash transactions.
+
+    Data is sourced from IBKR Flex Queries and may be delayed up to T-1.
+    Requires flex.token and flex.query_id to be configured (see: ibkr config set).
+    """
+    config, flex = resolve_flex_or_exit(json_output=json_output)
+    try:
+        payload = get_flex_cash_transactions(flex, days=days)
+    except Exception as exc:
+        exit_with_error(
+            f"Failed to fetch cash transactions: {exc}",
+            code=ERROR_FLEX_REQUEST_FAILED,
+            exit_code=EXIT_CODE_API,
+            json_output=json_output,
+        )
+        return
+    if json_output:
+        print_json(payload)
+        return
+    console.print(render_flex_cash_transactions_table(payload["rows"]))
+    console.print(f"\n[dim]{payload['count']} transaction(s) in the last {days} day(s) · data up to T-1[/dim]")
+
+
+# ── Config commands ──────────────────────────────────────────
+
+
+@config_app.command("show")
+def config_show(
+    json_output: bool = typer.Option(False, "--json", help="Output JSON."),
+) -> None:
+    """Show current configuration."""
+    config, _ = load_or_exit(json_output=json_output)
+    flex = get_flex_config(config)
+    payload = {
+        "config_file": str(CONFIG_FILE),
+        "default_profile": config.default_profile,
+        "profiles": {name: profile_to_dict(name, p, name == config.default_profile) for name, p in config.profiles.items()},
+        "flex": {
+            "token": f"{flex.token[:6]}...{flex.token[-4:]}" if len(flex.token) > 10 else ("***" if flex.token else "(not set)"),
+            "query_id": flex.query_id or "(not set)",
+        },
+    }
+    if json_output:
+        print_json(payload)
+        return
+    table = Table(title="Configuration")
+    table.add_column("Key", style="cyan")
+    table.add_column("Value")
+    table.add_row("Config file", str(CONFIG_FILE))
+    table.add_row("Default profile", config.default_profile)
+    table.add_row("Flex token", payload["flex"]["token"])
+    table.add_row("Flex query_id", payload["flex"]["query_id"])
+    console.print(table)
+
+
+@config_app.command("set")
+def config_set(
+    key: str = typer.Argument(..., help="Config key (e.g. flex.token, flex.query_id, default_profile)."),
+    value: str = typer.Argument(..., help="Value to set."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON."),
+) -> None:
+    """Set a configuration value."""
+    config, _ = load_or_exit(json_output=json_output)
+    try:
+        set_config_value(config, key, value)
+    except (KeyError, ValueError) as exc:
+        exit_with_error(str(exc), exit_code=EXIT_CODE_CONFIG, json_output=json_output)
+        return
+    save_config(config, force=True)
+    if json_output:
+        print_json({"ok": True, "key": key, "value": value if "token" not in key else "***"})
+    else:
+        display_value = "***" if "token" in key else value
+        console.print(f"[green]Set {key} = {display_value}[/green]")
+
+
+@config_app.command("path")
+def config_path_cmd() -> None:
+    """Show the config file path."""
+    console.print(str(CONFIG_FILE))
 
 
 if __name__ == "__main__":

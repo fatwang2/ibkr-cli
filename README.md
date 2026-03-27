@@ -30,6 +30,8 @@ Once installed, simply tell your agent what you want to do (e.g., "help me insta
 - Options chain lookup with expirations, strikes, and greeks
 - Market scanner for screening stocks by various criteria
 - Company fundamentals: snapshot, financial summary, full financials, ownership (requires Reuters Fundamentals subscription)
+- Historical trade records, P&L by symbol, fund transfers, dividends and cash transactions (via Flex Queries)
+- CLI configuration management (`ibkr config set/show/path`)
 - Automatic update check with `ibkr update`
 
 ## Requirements
@@ -66,7 +68,7 @@ ibkr --version
 The CLI automatically creates a config file with default profiles on first use. To see where the config file is located:
 
 ```bash
-ibkr config-path
+ibkr config path
 ```
 
 The default profiles are:
@@ -281,6 +283,57 @@ Ownership structure (institutional and insider holders):
 ibkr fundamentals ownership AAPL --profile gateway-live
 ```
 
+### Historical data (Flex Queries)
+
+These commands fetch historical account data via IBKR Flex Queries over HTTPS. They do **not** require IB Gateway or TWS to be running, but data may be delayed up to T-1.
+
+**Setup:**
+
+```bash
+# Token: Account Management > Settings > FlexWeb Service
+ibkr config set flex.token YOUR_TOKEN
+
+# Query ID: Account Management > Reports > Flex Queries
+ibkr config set flex.query_id YOUR_QUERY_ID
+```
+
+Trade history:
+
+```bash
+ibkr trades
+ibkr trades --days 7
+ibkr trades --days 90 --json
+```
+
+P&L by symbol (realized + unrealized):
+
+```bash
+ibkr pnl
+ibkr pnl --days 90
+```
+
+Fund deposits, withdrawals, and transfers:
+
+```bash
+ibkr transfers
+ibkr transfers --days 180
+```
+
+Dividends, interest, withholding tax, and other cash transactions:
+
+```bash
+ibkr dividends
+ibkr dividends --days 90
+```
+
+### Configuration
+
+```bash
+ibkr config show               # View current config (token is masked)
+ibkr config set <key> <value>  # Set a value (e.g. flex.token, flex.query_id, default_profile)
+ibkr config path               # Show config file location
+```
+
 ## JSON output
 
 Most read and trading commands support `--json` for machine-readable output.
@@ -329,6 +382,7 @@ Current error code families include:
 - `options_request_failed`
 - `scanner_request_failed`
 - `fundamentals_request_failed`
+- `flex_request_failed`
 
 ## Operational notes
 
