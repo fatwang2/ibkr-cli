@@ -959,6 +959,49 @@ def cancel_open_order(
         return _trade_payload(cancelled_trade, managed_accounts, selected_account, raw_errors, "cancel")
 
 
+def _build_clean_modify_order(source_order: object) -> object:
+    """Build a clean Order for modification, copying only essential fields.
+
+    Orders returned by reqAllOpenOrders() contain server-populated fields
+    that can cause Error 320 (NumberFormatException) when sent back.
+    This builds a minimal Order with the same identity and core parameters,
+    avoiding round-trip serialization issues.
+    """
+    try:
+        from ib_async import Order
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "ib_async is not installed. Reinstall the project with Python 3.10+ to enable IBKR API commands."
+        ) from exc
+
+    order = Order()
+    # Identity — server uses these to match the existing order
+    order.orderId = source_order.orderId
+    order.clientId = source_order.clientId
+    order.permId = source_order.permId
+    # Core order parameters
+    order.action = source_order.action
+    order.totalQuantity = source_order.totalQuantity
+    order.orderType = source_order.orderType
+    order.lmtPrice = source_order.lmtPrice
+    order.auxPrice = source_order.auxPrice
+    order.tif = source_order.tif
+    order.outsideRth = source_order.outsideRth
+    order.account = source_order.account
+    # Bracket / OCA linkage
+    order.parentId = source_order.parentId
+    order.ocaGroup = source_order.ocaGroup
+    order.ocaType = source_order.ocaType
+    order.transmit = source_order.transmit
+    # Trailing orders
+    order.trailStopPrice = source_order.trailStopPrice
+    order.trailingPercent = source_order.trailingPercent
+    # Time constraints
+    order.goodAfterTime = source_order.goodAfterTime
+    order.goodTillDate = source_order.goodTillDate
+    return order
+
+
 def modify_order(
     profile: ProfileConfig,
     order_id: int,
@@ -991,8 +1034,8 @@ def modify_order(
             raise RuntimeError(f"Open order '{order_id}' was not found.")
 
         selected_account = target_trade.order.account
-        order = target_trade.order
         contract = target_trade.contract
+        order = _build_clean_modify_order(target_trade.order)
 
         if limit_price is not None:
             order.lmtPrice = limit_price
