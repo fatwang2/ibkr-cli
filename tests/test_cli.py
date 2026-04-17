@@ -17,6 +17,93 @@ def stub_profile():
 
 
 class CliTests(unittest.TestCase):
+    def test_account_summary_without_account_requests_all_accounts(self) -> None:
+        rendered = {}
+        captured = {}
+
+        def fake_summary(profile, **kwargs):
+            captured["profile"] = profile
+            captured["kwargs"] = kwargs
+            return {
+                "managed_accounts": ["U123456789", "U987654321"],
+                "selected_account": None,
+                "tags": ["NetLiquidation"],
+                "rows": [
+                    {
+                        "account": "U123456789",
+                        "tag": "NetLiquidation",
+                        "value": "100000",
+                        "currency": "USD",
+                    },
+                    {
+                        "account": "U987654321",
+                        "tag": "NetLiquidation",
+                        "value": "250000",
+                        "currency": "USD",
+                    },
+                ],
+            }
+
+        with patch.object(
+            app_module,
+            "resolve_profile_or_exit",
+            side_effect=lambda profile, json_output=False: stub_profile(),
+        ):
+            with patch.object(app_module, "get_account_summary", side_effect=fake_summary):
+                with patch.object(app_module, "print_json", side_effect=lambda payload: rendered.setdefault("payload", payload)):
+                    result = runner.invoke(app_module.app, ["account", "summary", "--json"])
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(
+            captured["kwargs"],
+            {
+                "timeout": 4.0,
+                "account": None,
+                "tags": None,
+            },
+        )
+        payload = rendered["payload"]
+        self.assertIsNone(payload["selected_account"])
+        self.assertEqual(len(payload["rows"]), 2)
+        self.assertEqual(payload["rows"][0]["account"], "U123456789")
+
+    def test_account_summary_json_can_omit_all_aggregate_rows(self) -> None:
+        rendered = {}
+
+        def fake_summary(profile, **kwargs):
+            return {
+                "managed_accounts": ["U123456789", "U987654321"],
+                "selected_account": None,
+                "tags": ["UnrealizedPnL"],
+                "rows": [
+                    {
+                        "account": "U123456789",
+                        "tag": "UnrealizedPnL",
+                        "value": "10.00",
+                        "currency": "USD",
+                    },
+                    {
+                        "account": "U987654321",
+                        "tag": "UnrealizedPnL",
+                        "value": "20.00",
+                        "currency": "USD",
+                    },
+                ],
+            }
+
+        with patch.object(
+            app_module,
+            "resolve_profile_or_exit",
+            side_effect=lambda profile, json_output=False: stub_profile(),
+        ):
+            with patch.object(app_module, "get_account_summary", side_effect=fake_summary):
+                with patch.object(app_module, "print_json", side_effect=lambda payload: rendered.setdefault("payload", payload)):
+                    result = runner.invoke(app_module.app, ["account", "summary", "--json"])
+
+        self.assertEqual(result.exit_code, 0)
+        accounts = {row["account"] for row in rendered["payload"]["rows"]}
+        self.assertNotIn("All", accounts)
+
     def test_quote_watch_json_routes_to_watch_service(self) -> None:
         captured = {}
         rendered = {}

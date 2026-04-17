@@ -7,6 +7,7 @@ import time
 import xml.etree.ElementTree as ET
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from datetime import datetime, timezone
@@ -26,6 +27,11 @@ DEFAULT_ACCOUNT_SUMMARY_TAGS = (
     "RealizedPnL",
 )
 
+_FUTURE_SYMBOL_RE = re.compile(r"^(?P<root>[A-Z0-9]{1,4})(?P<month>[FGHJKMNQUVXZ])(?P<year>\d)$")
+_OPTION_OCC_RE = re.compile(r"^(?P<root>[A-Z]{1,6})(?P<date>\d{6})(?P<right>[CP])(?P<strike>\d{8})$")
+_OPTION_SHORT_RE = re.compile(r"^(?P<root>[A-Z]{1,6})(?P<date>\d{6})(?P<right>[CP])(?P<strike>\d+(?:\.\d+)?)$")
+_IB_EXPIRY_WITH_TZ_RE = re.compile(r"^(?P<date>\d{8}) (?P<time>\d{2}:\d{2}:\d{2}) (?P<tz>[A-Za-z_./+-]+)$")
+
 
 @dataclass(frozen=True)
 class ApiConnectionResult:
@@ -41,6 +47,236 @@ class ApiConnectionResult:
 
     def to_dict(self) -> Dict[str, object]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class OptionSymbolParts:
+    underlying: str
+    expiration: str
+    right: str
+    strike: float
+    normalized_input: str
+    normalized_occ_symbol: str
+
+
+def _normalize_trade_symbol(symbol: str) -> str:
+    return symbol.strip().upper()
+
+
+def _parse_option_date(value: str) -> str:
+    return f"20{value}"
+
+
+def _occ_strike_to_float(value: str) -> float:
+    return int(value) / 1000.0
+
+
+def _format_occ_strike(value: str) -> tuple[float, str]:
+    try:
+        decimal_value = Decimal(value)
+    except InvalidOperation as exc:
+        raise ValueError(f"Invalid option strike '{value}'.") from exc
+    if decimal_value < 0:
+        raise ValueError(f"Invalid option strike '{value}'.")
+    milli_value = decimal_value * 1000
+    if milli_value != milli_value.to_integral_value():
+        raise ValueError(
+            f"Option strike '{value}' has too many decimal places. Use at most 3 decimal places."
+        )
+    strike_int = int(milli_value)
+    return float(decimal_value), f"{strike_int:08d}"
+
+
+def _parse_option_symbol(symbol: str) -> Optional[OptionSymbolParts]:
+    normalized = _normalize_trade_symbol(symbol)
+
+    occ_match = _OPTION_OCC_RE.match(normalized)
+    if occ_match:
+        strike = _occ_strike_to_float(occ_match.group("strike"))
+        return OptionSymbolParts(
+            underlying=occ_match.group("root"),
+            expiration=_parse_option_date(occ_match.group("date")),
+            right=occ_match.group("right"),
+            strike=strike,
+            normalized_input=normalized,
+            normalized_occ_symbol=normalized,
+        )
+
+    short_match = _OPTION_SHORT_RE.match(normalized)
+    if not short_match:
+        return None
+
+    strike, occ_strike = _format_occ_strike(short_match.group("strike"))
+    return OptionSymbolParts(
+        underlying=short_match.group("root"),
+        expiration=_parse_option_date(short_match.group("date")),
+        right=short_match.group("right"),
+        strike=strike,
+        normalized_input=normalized,
+        normalized_occ_symbol=(
+            f"{short_match.group('root')}{short_match.group('date')}"
+            f"{short_match.group('right')}{occ_strike}"
+        ),
+    )
+
+
+def _is_forex_pair_symbol(symbol: str) -> bool:
+    normalized = _normalize_trade_symbol(symbol)
+    return len(normalized) == 6 and normalized.isalpha()
+
+
+def _future_symbol_match(symbol: str) -> Optional[re.Match[str]]:
+    normalized = _normalize_trade_symbol(symbol)
+    return _FUTURE_SYMBOL_RE.match(normalized)
+
+
+def _detect_trade_contract_kind(symbol: str) -> str:
+    normalized = _normalize_trade_symbol(symbol)
+    if _parse_option_symbol(normalized):
+        return "OPT"
+    if _is_forex_pair_symbol(normalized):
+        return "CASH"
+    if _future_symbol_match(normalized):
+        return "FUT"
+    return "STK"
+
+
+def _build_trade_contract(symbol: str, exchange: str, currency: str) -> tuple[str, object]:
+    try:
+        from ib_async import Contract, Forex, Option, Stock
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "ib_async is not installed. Reinstall the project with Python 3.10+ to enable IBKR API commands."
+        ) from exc
+
+    normalized_symbol = _normalize_trade_symbol(symbol)
+    contract_kind = _detect_trade_contract_kind(normalized_symbol)
+
+    if contract_kind == "OPT":
+        parts = _parse_option_symbol(normalized_symbol)
+        if parts is None:
+            raise RuntimeError(f"Unable to parse option symbol '{normalized_symbol}'.")
+        resolved_exchange = exchange.upper() if exchange else "SMART"
+        resolved_currency = currency.upper() if currency else "USD"
+        return contract_kind, Option(
+            parts.underlying,
+            parts.expiration,
+            parts.strike,
+            parts.right,
+            resolved_exchange,
+            currency=resolved_currency,
+        )
+
+    if contract_kind == "CASH":
+        resolved_exchange = exchange.upper() if exchange and exchange.upper() != "SMART" else "IDEALPRO"
+        return contract_kind, Forex(normalized_symbol, exchange=resolved_exchange)
+
+    if contract_kind == "FUT":
+        resolved_exchange = exchange.upper() if exchange and exchange.upper() != "SMART" else ""
+        return contract_kind, Contract(
+            secType="FUT",
+            localSymbol=normalized_symbol,
+            exchange=resolved_exchange,
+            currency=currency.upper(),
+        )
+
+    return contract_kind, Stock(symbol=normalized_symbol, exchange=exchange.upper(), currency=currency.upper())
+
+
+def _normalize_contract_for_order(contract: object) -> object:
+    expiry = getattr(contract, "lastTradeDateOrContractMonth", None)
+    if not isinstance(expiry, str) or not expiry:
+        return contract
+
+    match = _IB_EXPIRY_WITH_TZ_RE.match(expiry.strip())
+    if not match:
+        return contract
+
+    # IB can qualify certain futures with a trailing timezone token such as "GB",
+    # but what-if/place-order expects the plain "yyyyMMdd HH:mm:ss" variant.
+    setattr(contract, "lastTradeDateOrContractMonth", f"{match.group('date')} {match.group('time')}")
+    return contract
+
+
+def _qualify_trade_contract(ib: object, symbol: str, exchange: str, currency: str) -> tuple[object, str]:
+    contract_kind, contract = _build_trade_contract(symbol=symbol, exchange=exchange, currency=currency)
+    qualified_contract = None
+    qualify_async = getattr(ib, "qualifyContractsAsync", None)
+    runner = getattr(ib, "_run", None)
+
+    if callable(qualify_async) and callable(runner):
+        qualified = runner(qualify_async(contract, returnAll=True))
+        if isinstance(qualified, (list, tuple)) and qualified:
+            first_result = qualified[0]
+            if isinstance(first_result, list):
+                normalized_symbol = _normalize_trade_symbol(symbol)
+                exchanges = sorted(
+                    {
+                        str(current_exchange).upper()
+                        for candidate in first_result
+                        for current_exchange in [getattr(candidate, "exchange", None)]
+                        if current_exchange
+                    }
+                )
+                possible_contracts = ", ".join(
+                    filter(
+                        None,
+                        (
+                            " / ".join(
+                                filter(
+                                    None,
+                                    (
+                                        getattr(candidate, "localSymbol", None),
+                                        getattr(candidate, "exchange", None),
+                                        getattr(candidate, "lastTradeDateOrContractMonth", None),
+                                    ),
+                                )
+                            )
+                            for candidate in first_result
+                            if candidate is not None
+                        ),
+                    )
+                )
+                exchange_hints = ", ".join(f"--exchange {current_exchange}" for current_exchange in exchanges)
+                if exchange_hints:
+                    suggestion = f" Retry with one of: {exchange_hints}."
+                else:
+                    suggestion = ""
+                raise RuntimeError(
+                    f"Ambiguous contract for symbol '{normalized_symbol}'. "
+                    f"IBKR returned multiple matches.{suggestion} "
+                    f"Matches: {possible_contracts or 'multiple candidates'}."
+                )
+            if first_result is not None:
+                qualified_contract = first_result
+    if qualified_contract is None:
+        qualified = ib.qualifyContracts(contract)
+        if qualified and qualified[0] is not None:
+            qualified_contract = qualified[0]
+
+    if qualified_contract is not None:
+        return _normalize_contract_for_order(qualified_contract), contract_kind
+
+    normalized_symbol = _normalize_trade_symbol(symbol)
+    if contract_kind == "OPT":
+        raise RuntimeError(
+            f"Symbol '{normalized_symbol}' looks like an OCC option symbol, but IBKR could not qualify it."
+        )
+    if contract_kind == "CASH":
+        raise RuntimeError(
+            f"Symbol '{normalized_symbol}' looks like a forex pair, but IBKR could not qualify it."
+        )
+    if contract_kind == "FUT":
+        normalized_exchange = (exchange or "").strip().upper()
+        if normalized_exchange and normalized_exchange != "SMART":
+            raise RuntimeError(
+                f"IBKR could not qualify futures symbol '{normalized_symbol}' on exchange '{normalized_exchange}'. "
+                "The exchange may be incorrect for this contract. Try removing --exchange or using the correct exchange."
+            )
+        raise RuntimeError(
+            f"Symbol '{normalized_symbol}' looks like a futures code, but IBKR could not qualify it."
+        )
+    raise RuntimeError(f"Unable to qualify contract for symbol '{symbol}'.")
 
 
 def _ib_class() -> Tuple[object, object]:
@@ -207,8 +443,12 @@ def get_account_summary(
     tags: Optional[Sequence[str]] = None,
 ) -> Dict[str, object]:
     with ib_session(profile, timeout=timeout) as ib:
-        managed_accounts, selected_account = _resolve_account(ib, account)
-        summary = ib.accountSummary(selected_account)
+        managed_accounts = list(ib.managedAccounts())
+        if account and managed_accounts and account not in managed_accounts:
+            available = ", ".join(managed_accounts)
+            raise ValueError(f"Unknown account '{account}'. Available accounts: {available}")
+
+        summary = ib.accountSummary(account) if account else ib.accountSummary()
 
         if tags is None:
             selected_tags = list(DEFAULT_ACCOUNT_SUMMARY_TAGS)
@@ -220,6 +460,8 @@ def get_account_summary(
         tag_order = {tag: index for index, tag in enumerate(selected_tags or [])}
         rows = []
         for item in summary:
+            if account is None and item.account == "All":
+                continue
             if selected_tags is not None and item.tag not in tag_order:
                 continue
             rows.append(
@@ -232,13 +474,13 @@ def get_account_summary(
             )
 
         if selected_tags is not None:
-            rows.sort(key=lambda row: (tag_order.get(row["tag"], 9999), str(row["currency"]), str(row["account"])))
+            rows.sort(key=lambda row: (str(row["account"]), tag_order.get(row["tag"], 9999), str(row["currency"])))
         else:
-            rows.sort(key=lambda row: (str(row["tag"]), str(row["currency"]), str(row["account"])))
+            rows.sort(key=lambda row: (str(row["account"]), str(row["tag"]), str(row["currency"])))
 
         return {
             "managed_accounts": managed_accounts,
-            "selected_account": selected_account,
+            "selected_account": account,
             "tags": selected_tags,
             "rows": rows,
         }
@@ -511,7 +753,7 @@ def get_executions(
 _SUPPORTED_ORDER_TYPES = ("MKT", "LMT", "STP", "STP LMT", "TRAIL")
 
 
-def _prepare_stock_order(
+def _prepare_order(
     ib: object,
     action: str,
     symbol: str,
@@ -528,7 +770,7 @@ def _prepare_stock_order(
     trail_percent: Optional[float] = None,
 ) -> tuple[List[str], str, object, object]:
     try:
-        from ib_async import LimitOrder, MarketOrder, Order, StopLimitOrder, StopOrder, Stock
+        from ib_async import LimitOrder, MarketOrder, Order, StopLimitOrder, StopOrder
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             "ib_async is not installed. Reinstall the project with Python 3.10+ to enable IBKR API commands."
@@ -582,12 +824,7 @@ def _prepare_stock_order(
         raise ValueError("--trail-amount and --trail-percent can only be used with --type TRAIL.")
 
     managed_accounts, selected_account = _resolve_account(ib, account)
-    contract = Stock(symbol=symbol.upper(), exchange=exchange, currency=currency)
-    qualified = ib.qualifyContracts(contract)
-    if not qualified:
-        raise RuntimeError(f"Unable to qualify contract for symbol '{symbol}'.")
-
-    qualified_contract = qualified[0]
+    qualified_contract, _ = _qualify_trade_contract(ib, symbol=symbol, exchange=exchange, currency=currency)
     common_kwargs = dict(tif=normalized_tif, outsideRth=outside_rth, account=selected_account)
 
     if normalized_order_type == "LMT":
@@ -631,7 +868,7 @@ def _prepare_bracket_order(
     stop_loss_price: float,
 ) -> tuple[List[str], str, object, list]:
     try:
-        from ib_async import LimitOrder, MarketOrder, StopOrder, Stock
+        from ib_async import LimitOrder, MarketOrder, StopOrder
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             "ib_async is not installed. Reinstall the project with Python 3.10+ to enable IBKR API commands."
@@ -656,12 +893,7 @@ def _prepare_bracket_order(
         raise ValueError("--stop-loss price must be positive.")
 
     managed_accounts, selected_account = _resolve_account(ib, account)
-    contract = Stock(symbol=symbol.upper(), exchange=exchange, currency=currency)
-    qualified = ib.qualifyContracts(contract)
-    if not qualified:
-        raise RuntimeError(f"Unable to qualify contract for symbol '{symbol}'.")
-
-    qualified_contract = qualified[0]
+    qualified_contract, _ = _qualify_trade_contract(ib, symbol=symbol, exchange=exchange, currency=currency)
     common_kwargs = dict(tif=normalized_tif, outsideRth=outside_rth, account=selected_account)
 
     # Parent order
@@ -729,7 +961,7 @@ def _trade_payload(
     }
 
 
-def preview_stock_order(
+def preview_order(
     profile: ProfileConfig,
     action: str,
     symbol: str,
@@ -771,7 +1003,7 @@ def preview_stock_order(
             order = orders[0]  # preview the parent order
             order.transmit = True  # override for whatIfOrder preview
         else:
-            managed_accounts, selected_account, qualified_contract, order = _prepare_stock_order(
+            managed_accounts, selected_account, qualified_contract, order = _prepare_order(
                 ib,
                 action=action,
                 symbol=symbol,
@@ -792,6 +1024,14 @@ def preview_stock_order(
         with _capture_ib_errors(ib, matcher) as raw_errors:
             with _suppress_ib_async_logs():
                 state = ib.whatIfOrder(qualified_contract, order)
+
+        if not hasattr(state, "status"):
+            error_messages = [str(error["message"]) for error in raw_errors if error.get("message")]
+            if error_messages:
+                raise RuntimeError(
+                    "IBKR could not preview this order. " + " | ".join(dict.fromkeys(error_messages))
+                )
+            raise RuntimeError("IBKR could not preview this order.")
 
         result = {
             "preview_only": True,
@@ -839,7 +1079,7 @@ def preview_stock_order(
         return result
 
 
-def submit_stock_order(
+def submit_order(
     profile: ProfileConfig,
     action: str,
     symbol: str,
@@ -898,7 +1138,7 @@ def submit_stock_order(
             }
             return parent_payload
         else:
-            managed_accounts, selected_account, qualified_contract, order = _prepare_stock_order(
+            managed_accounts, selected_account, qualified_contract, order = _prepare_order(
                 ib,
                 action=action,
                 symbol=symbol,
@@ -921,6 +1161,86 @@ def submit_stock_order(
                     ib.waitOnUpdate(timeout=min(timeout, 0.75))
 
             return _trade_payload(trade, managed_accounts, selected_account, raw_errors, "submit")
+
+
+def preview_stock_order(
+    profile: ProfileConfig,
+    action: str,
+    symbol: str,
+    quantity: float,
+    exchange: str = "SMART",
+    currency: str = "USD",
+    order_type: str = "MKT",
+    limit_price: Optional[float] = None,
+    tif: str = "DAY",
+    outside_rth: bool = False,
+    timeout: float = 4.0,
+    account: Optional[str] = None,
+    stop_price: Optional[float] = None,
+    trail_stop_price: Optional[float] = None,
+    trail_percent: Optional[float] = None,
+    take_profit_price: Optional[float] = None,
+    stop_loss_price: Optional[float] = None,
+) -> Dict[str, object]:
+    return preview_order(
+        profile=profile,
+        action=action,
+        symbol=symbol,
+        quantity=quantity,
+        exchange=exchange,
+        currency=currency,
+        order_type=order_type,
+        limit_price=limit_price,
+        tif=tif,
+        outside_rth=outside_rth,
+        timeout=timeout,
+        account=account,
+        stop_price=stop_price,
+        trail_stop_price=trail_stop_price,
+        trail_percent=trail_percent,
+        take_profit_price=take_profit_price,
+        stop_loss_price=stop_loss_price,
+    )
+
+
+def submit_stock_order(
+    profile: ProfileConfig,
+    action: str,
+    symbol: str,
+    quantity: float,
+    exchange: str = "SMART",
+    currency: str = "USD",
+    order_type: str = "MKT",
+    limit_price: Optional[float] = None,
+    tif: str = "DAY",
+    outside_rth: bool = False,
+    timeout: float = 4.0,
+    account: Optional[str] = None,
+    stop_price: Optional[float] = None,
+    trail_stop_price: Optional[float] = None,
+    trail_percent: Optional[float] = None,
+    take_profit_price: Optional[float] = None,
+    stop_loss_price: Optional[float] = None,
+) -> Dict[str, object]:
+    return submit_order(
+        profile=profile,
+        action=action,
+        symbol=symbol,
+        quantity=quantity,
+        exchange=exchange,
+        currency=currency,
+        order_type=order_type,
+        limit_price=limit_price,
+        tif=tif,
+        outside_rth=outside_rth,
+        timeout=timeout,
+        account=account,
+        stop_price=stop_price,
+        trail_stop_price=trail_stop_price,
+        trail_percent=trail_percent,
+        take_profit_price=take_profit_price,
+        stop_loss_price=stop_loss_price,
+    )
 
 
 def cancel_open_order(
