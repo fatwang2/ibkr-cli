@@ -7,6 +7,7 @@ import time
 import xml.etree.ElementTree as ET
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from datetime import datetime, timezone
@@ -27,6 +28,8 @@ DEFAULT_ACCOUNT_SUMMARY_TAGS = (
 )
 
 _FUTURE_SYMBOL_RE = re.compile(r"^(?P<root>[A-Z0-9]{1,4})(?P<month>[FGHJKMNQUVXZ])(?P<year>\d)$")
+_OPTION_OCC_RE = re.compile(r"^(?P<root>[A-Z]{1,6})(?P<date>\d{6})(?P<right>[CP])(?P<strike>\d{8})$")
+_OPTION_SHORT_RE = re.compile(r"^(?P<root>[A-Z]{1,6})(?P<date>\d{6})(?P<right>[CP])(?P<strike>\d+(?:\.\d+)?)$")
 _IB_EXPIRY_WITH_TZ_RE = re.compile(r"^(?P<date>\d{8}) (?P<time>\d{2}:\d{2}:\d{2}) (?P<tz>[A-Za-z_./+-]+)$")
 
 
@@ -46,8 +49,75 @@ class ApiConnectionResult:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class OptionSymbolParts:
+    underlying: str
+    expiration: str
+    right: str
+    strike: float
+    normalized_input: str
+    normalized_occ_symbol: str
+
+
 def _normalize_trade_symbol(symbol: str) -> str:
     return symbol.strip().upper()
+
+
+def _parse_option_date(value: str) -> str:
+    return f"20{value}"
+
+
+def _occ_strike_to_float(value: str) -> float:
+    return int(value) / 1000.0
+
+
+def _format_occ_strike(value: str) -> tuple[float, str]:
+    try:
+        decimal_value = Decimal(value)
+    except InvalidOperation as exc:
+        raise ValueError(f"Invalid option strike '{value}'.") from exc
+    if decimal_value < 0:
+        raise ValueError(f"Invalid option strike '{value}'.")
+    milli_value = decimal_value * 1000
+    if milli_value != milli_value.to_integral_value():
+        raise ValueError(
+            f"Option strike '{value}' has too many decimal places. Use at most 3 decimal places."
+        )
+    strike_int = int(milli_value)
+    return float(decimal_value), f"{strike_int:08d}"
+
+
+def _parse_option_symbol(symbol: str) -> Optional[OptionSymbolParts]:
+    normalized = _normalize_trade_symbol(symbol)
+
+    occ_match = _OPTION_OCC_RE.match(normalized)
+    if occ_match:
+        strike = _occ_strike_to_float(occ_match.group("strike"))
+        return OptionSymbolParts(
+            underlying=occ_match.group("root"),
+            expiration=_parse_option_date(occ_match.group("date")),
+            right=occ_match.group("right"),
+            strike=strike,
+            normalized_input=normalized,
+            normalized_occ_symbol=normalized,
+        )
+
+    short_match = _OPTION_SHORT_RE.match(normalized)
+    if not short_match:
+        return None
+
+    strike, occ_strike = _format_occ_strike(short_match.group("strike"))
+    return OptionSymbolParts(
+        underlying=short_match.group("root"),
+        expiration=_parse_option_date(short_match.group("date")),
+        right=short_match.group("right"),
+        strike=strike,
+        normalized_input=normalized,
+        normalized_occ_symbol=(
+            f"{short_match.group('root')}{short_match.group('date')}"
+            f"{short_match.group('right')}{occ_strike}"
+        ),
+    )
 
 
 def _is_forex_pair_symbol(symbol: str) -> bool:
@@ -62,6 +132,8 @@ def _future_symbol_match(symbol: str) -> Optional[re.Match[str]]:
 
 def _detect_trade_contract_kind(symbol: str) -> str:
     normalized = _normalize_trade_symbol(symbol)
+    if _parse_option_symbol(normalized):
+        return "OPT"
     if _is_forex_pair_symbol(normalized):
         return "CASH"
     if _future_symbol_match(normalized):
@@ -71,7 +143,7 @@ def _detect_trade_contract_kind(symbol: str) -> str:
 
 def _build_trade_contract(symbol: str, exchange: str, currency: str) -> tuple[str, object]:
     try:
-        from ib_async import Contract, Forex, Stock
+        from ib_async import Contract, Forex, Option, Stock
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             "ib_async is not installed. Reinstall the project with Python 3.10+ to enable IBKR API commands."
@@ -79,6 +151,21 @@ def _build_trade_contract(symbol: str, exchange: str, currency: str) -> tuple[st
 
     normalized_symbol = _normalize_trade_symbol(symbol)
     contract_kind = _detect_trade_contract_kind(normalized_symbol)
+
+    if contract_kind == "OPT":
+        parts = _parse_option_symbol(normalized_symbol)
+        if parts is None:
+            raise RuntimeError(f"Unable to parse option symbol '{normalized_symbol}'.")
+        resolved_exchange = exchange.upper() if exchange else "SMART"
+        resolved_currency = currency.upper() if currency else "USD"
+        return contract_kind, Option(
+            parts.underlying,
+            parts.expiration,
+            parts.strike,
+            parts.right,
+            resolved_exchange,
+            currency=resolved_currency,
+        )
 
     if contract_kind == "CASH":
         resolved_exchange = exchange.upper() if exchange and exchange.upper() != "SMART" else "IDEALPRO"
@@ -171,6 +258,10 @@ def _qualify_trade_contract(ib: object, symbol: str, exchange: str, currency: st
         return _normalize_contract_for_order(qualified_contract), contract_kind
 
     normalized_symbol = _normalize_trade_symbol(symbol)
+    if contract_kind == "OPT":
+        raise RuntimeError(
+            f"Symbol '{normalized_symbol}' looks like an OCC option symbol, but IBKR could not qualify it."
+        )
     if contract_kind == "CASH":
         raise RuntimeError(
             f"Symbol '{normalized_symbol}' looks like a forex pair, but IBKR could not qualify it."

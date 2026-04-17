@@ -8,6 +8,32 @@ from ibkr_cli.config import ProfileConfig
 
 
 class TradeContractDetectionTests(unittest.TestCase):
+    def test_detects_occ_option_symbol_by_shape(self) -> None:
+        self.assertEqual(ib_service._detect_trade_contract_kind("SPY260417C00700000"), "OPT")
+        self.assertEqual(ib_service._detect_trade_contract_kind("SPY260417C700"), "OPT")
+        self.assertEqual(ib_service._detect_trade_contract_kind("SPY260417C720.5"), "OPT")
+
+    def test_parses_occ_option_symbol(self) -> None:
+        parts = ib_service._parse_option_symbol("SPY260417C00700000")
+        self.assertIsNotNone(parts)
+        assert parts is not None
+        self.assertEqual(parts.underlying, "SPY")
+        self.assertEqual(parts.expiration, "20260417")
+        self.assertEqual(parts.right, "C")
+        self.assertEqual(parts.strike, 700.0)
+        self.assertEqual(parts.normalized_occ_symbol, "SPY260417C00700000")
+
+    def test_parses_short_option_symbol_and_normalizes_occ_strike(self) -> None:
+        parts = ib_service._parse_option_symbol("SPY260417C720.5")
+        self.assertIsNotNone(parts)
+        assert parts is not None
+        self.assertEqual(parts.strike, 720.5)
+        self.assertEqual(parts.normalized_occ_symbol, "SPY260417C00720500")
+
+    def test_rejects_option_strike_with_more_than_three_decimals(self) -> None:
+        with self.assertRaisesRegex(ValueError, "too many decimal places"):
+            ib_service._format_occ_strike("720.5555")
+
     def test_detects_forex_pair_by_shape(self) -> None:
         self.assertTrue(ib_service._is_forex_pair_symbol("USDJPY"))
         self.assertTrue(ib_service._is_forex_pair_symbol("ABCDEF"))
@@ -32,6 +58,16 @@ class TradeContractDetectionTests(unittest.TestCase):
         self.assertEqual(kind, "FUT")
         self.assertEqual(contract.exchange, "")
 
+    def test_build_trade_contract_uses_option_for_occ_symbol(self) -> None:
+        kind, contract = ib_service._build_trade_contract("SPY260417C720.5", "SMART", "USD")
+        self.assertEqual(kind, "OPT")
+        self.assertEqual(contract.symbol, "SPY")
+        self.assertEqual(contract.lastTradeDateOrContractMonth, "20260417")
+        self.assertEqual(contract.right, "C")
+        self.assertEqual(contract.strike, 720.5)
+        self.assertEqual(contract.exchange, "SMART")
+        self.assertEqual(contract.currency, "USD")
+
     def test_normalize_contract_for_order_strips_trailing_expiry_timezone(self) -> None:
         contract = SimpleNamespace(lastTradeDateOrContractMonth="20260430 19:30:00 GB")
         normalized = ib_service._normalize_contract_for_order(contract)
@@ -46,6 +82,12 @@ class TradeContractDetectionTests(unittest.TestCase):
         ib.qualifyContracts.return_value = []
         with self.assertRaisesRegex(RuntimeError, "looks like a forex pair"):
             ib_service._qualify_trade_contract(ib, "ABCDEF", "SMART", "USD")
+
+    def test_option_qualification_failure_is_not_silently_treated_as_stock(self) -> None:
+        ib = Mock()
+        ib.qualifyContracts.return_value = []
+        with self.assertRaisesRegex(RuntimeError, "looks like an OCC option symbol"):
+            ib_service._qualify_trade_contract(ib, "SPY260417C700", "SMART", "USD")
 
     def test_future_qualification_failure_is_not_silently_treated_as_stock(self) -> None:
         ib = Mock()

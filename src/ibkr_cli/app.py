@@ -950,7 +950,7 @@ def execute_trade_command(
 def buy(
     symbol: str = typer.Argument(
         ...,
-        help="Trading symbol. Examples: AAPL (stock), USDJPY (forex), ESZ6 (future).",
+        help="Trading symbol. Examples: AAPL (stock), USDJPY (forex), ESZ6 (future), SPY260417C700 (option).",
     ),
     quantity: float = typer.Argument(..., help="Order quantity."),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
@@ -983,7 +983,7 @@ def buy(
 def sell(
     symbol: str = typer.Argument(
         ...,
-        help="Trading symbol. Examples: AAPL (stock), USDJPY (forex), ESZ6 (future).",
+        help="Trading symbol. Examples: AAPL (stock), USDJPY (forex), ESZ6 (future), SPY260417C700 (option).",
     ),
     quantity: float = typer.Argument(..., help="Order quantity."),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),

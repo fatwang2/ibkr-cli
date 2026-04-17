@@ -123,10 +123,17 @@ ibkr orders modify 12345 --limit 150.50 --profile gateway-paper --account U12345
 Trading commands auto-detect a subset of contract types from `symbol`:
 
 - `AAPL` -> stock
+- `SPY260417C00700000` / `SPY260417C700` / `SPY260417C720.5` -> option on `SMART`
 - `USDJPY` -> forex on `IDEALPRO`
-- `ESZ6` -> future using the built-in exchange map
+- `ESZ6` -> future
 
-Symbols that do not match a forex or future pattern are treated as stocks.
+Option symbols support the no-space OCC format and a simplified strike format:
+
+- `SPY260417C00700000` -> standard OCC strike encoding
+- `SPY260417C700` -> strike `700.0`
+- `SPY260417C720.5` -> strike `720.5`, equivalent to OCC strike `00720500`
+
+Symbols that do not match an option, forex, or future pattern are treated as stocks.
 
 Preview first:
 
@@ -134,6 +141,8 @@ Preview first:
 ibkr buy AAPL 10 --preview --profile gateway-live
 ibkr buy AAPL 10 --preview --profile gateway-live --account U123456789
 ibkr sell AAPL 10 --preview --profile gateway-live
+ibkr buy SPY260417C00700000 1 --preview --profile gateway-live
+ibkr buy "SPY260417C720.5" 1 --preview --profile gateway-live
 ibkr buy USDJPY 1000 --preview --profile gateway-live
 ibkr buy ESZ6 1 --preview --profile gateway-live
 ```
