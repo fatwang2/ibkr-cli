@@ -4,6 +4,7 @@ import unittest
 from rich.console import Console
 
 from ibkr_cli.app import (
+    render_account_summary_table,
     render_bars_table,
     render_news_article_table,
     render_news_headlines_table,
@@ -24,6 +25,18 @@ def render_text(table) -> str:
 
 
 class RendererTests(unittest.TestCase):
+    def test_render_account_summary_table_shows_account_column_for_multi_account(self) -> None:
+        rows = [
+            {"account": "U123456789", "tag": "NetLiquidation", "value": "100000", "currency": "USD"},
+            {"account": "U987654321", "tag": "NetLiquidation", "value": "250000", "currency": "USD"},
+        ]
+
+        text = render_text(render_account_summary_table(rows[:1], "U123456789"))
+
+        self.assertIn("Account Summary: U123456789", text)
+        self.assertIn("U123456789", text)
+        self.assertNotIn("U987654321", text)
+
     def test_render_quote_table_shows_core_fields(self) -> None:
         payload = {
             "symbol": "AAPL",

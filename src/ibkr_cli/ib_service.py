@@ -443,8 +443,12 @@ def get_account_summary(
     tags: Optional[Sequence[str]] = None,
 ) -> Dict[str, object]:
     with ib_session(profile, timeout=timeout) as ib:
-        managed_accounts, selected_account = _resolve_account(ib, account)
-        summary = ib.accountSummary(selected_account)
+        managed_accounts = list(ib.managedAccounts())
+        if account and managed_accounts and account not in managed_accounts:
+            available = ", ".join(managed_accounts)
+            raise ValueError(f"Unknown account '{account}'. Available accounts: {available}")
+
+        summary = ib.accountSummary(account) if account else ib.accountSummary()
 
         if tags is None:
             selected_tags = list(DEFAULT_ACCOUNT_SUMMARY_TAGS)
@@ -456,6 +460,8 @@ def get_account_summary(
         tag_order = {tag: index for index, tag in enumerate(selected_tags or [])}
         rows = []
         for item in summary:
+            if account is None and item.account == "All":
+                continue
             if selected_tags is not None and item.tag not in tag_order:
                 continue
             rows.append(
@@ -468,13 +474,13 @@ def get_account_summary(
             )
 
         if selected_tags is not None:
-            rows.sort(key=lambda row: (tag_order.get(row["tag"], 9999), str(row["currency"]), str(row["account"])))
+            rows.sort(key=lambda row: (str(row["account"]), tag_order.get(row["tag"], 9999), str(row["currency"])))
         else:
-            rows.sort(key=lambda row: (str(row["tag"]), str(row["currency"]), str(row["account"])))
+            rows.sort(key=lambda row: (str(row["account"]), str(row["tag"]), str(row["currency"])))
 
         return {
             "managed_accounts": managed_accounts,
-            "selected_account": selected_account,
+            "selected_account": account,
             "tags": selected_tags,
             "rows": rows,
         }

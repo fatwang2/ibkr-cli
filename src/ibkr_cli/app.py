@@ -5,6 +5,7 @@ import subprocess
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
+from collections import defaultdict
 
 import typer
 from rich.console import Console
@@ -719,7 +720,16 @@ def account_summary(
         return
 
     console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
-    console.print(render_account_summary_table(payload["rows"], str(payload["selected_account"])))
+    if payload["selected_account"]:
+        console.print(render_account_summary_table(payload["rows"], str(payload["selected_account"])))
+    else:
+        grouped_rows: Dict[str, List[Dict[str, object]]] = defaultdict(list)
+        for row in payload["rows"]:
+            grouped_rows[str(row["account"])].append(row)
+        for index, account_key in enumerate(sorted(grouped_rows)):
+            if index:
+                console.print()
+            console.print(render_account_summary_table(grouped_rows[account_key], account_key))
 
 
 @app.command()
