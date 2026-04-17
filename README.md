@@ -98,34 +98,51 @@ ibkr connect test --profile gateway-paper
 
 ### Account and positions
 
+If a profile is connected to multiple managed accounts, pass `--account` to target a specific account:
+
 ```bash
 ibkr account summary --profile gateway-paper
+ibkr account summary --profile gateway-paper --account U123456789
 ibkr positions --profile gateway-paper
+ibkr positions --profile gateway-paper --account U123456789
 ```
 
 ### Orders
 
 ```bash
 ibkr orders open --profile gateway-paper
+ibkr orders open --profile gateway-paper --account U123456789
 ibkr orders completed --profile gateway-paper
 ibkr orders executions --profile gateway-paper
-ibkr orders cancel 12345 --profile gateway-paper
-ibkr orders modify 12345 --limit 150.50 --profile gateway-paper
+ibkr orders cancel 12345 --profile gateway-paper --account U123456789
+ibkr orders modify 12345 --limit 150.50 --profile gateway-paper --account U123456789
 ```
 
 ### Trading
+
+Trading commands auto-detect a subset of contract types from `symbol`:
+
+- `AAPL` -> stock
+- `USDJPY` -> forex on `IDEALPRO`
+- `ESZ6` -> future using the built-in exchange map
+
+Symbols that do not match a forex or future pattern are treated as stocks.
 
 Preview first:
 
 ```bash
 ibkr buy AAPL 10 --preview --profile gateway-live
+ibkr buy AAPL 10 --preview --profile gateway-live --account U123456789
 ibkr sell AAPL 10 --preview --profile gateway-live
+ibkr buy USDJPY 1000 --preview --profile gateway-live
+ibkr buy ESZ6 1 --preview --profile gateway-live
 ```
 
 Submit only when you explicitly intend to place an order:
 
 ```bash
 ibkr buy AAPL 10 --submit --profile gateway-live
+ibkr buy AAPL 10 --submit --profile gateway-live --account U123456789
 ibkr sell AAPL 10 --submit --profile gateway-live
 ```
 

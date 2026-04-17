@@ -948,11 +948,14 @@ def execute_trade_command(
 
 @app.command()
 def buy(
-    symbol: str = typer.Argument(..., help="Ticker symbol, for example AAPL."),
+    symbol: str = typer.Argument(
+        ...,
+        help="Trading symbol. Examples: AAPL (stock), USDJPY (forex), ESZ6 (future).",
+    ),
     quantity: float = typer.Argument(..., help="Order quantity."),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
-    exchange: str = typer.Option("SMART", "--exchange", help="Exchange to use for contract qualification."),
-    currency: str = typer.Option("USD", "--currency", help="Currency to use for contract qualification."),
+    exchange: str = typer.Option("SMART", "--exchange", help="Exchange override for contract qualification."),
+    currency: str = typer.Option("USD", "--currency", help="Currency override for stock and futures qualification."),
     order_type: str = typer.Option("MKT", "--type", help="Order type: MKT, LMT, STP, STP LMT, or TRAIL."),
     limit_price: Optional[float] = typer.Option(None, "--limit", help="Limit price (required for LMT / STP LMT)."),
     stop_price: Optional[float] = typer.Option(None, "--stop", help="Stop trigger price (required for STP / STP LMT, optional for TRAIL)."),
@@ -978,11 +981,14 @@ def buy(
 
 @app.command()
 def sell(
-    symbol: str = typer.Argument(..., help="Ticker symbol, for example AAPL."),
+    symbol: str = typer.Argument(
+        ...,
+        help="Trading symbol. Examples: AAPL (stock), USDJPY (forex), ESZ6 (future).",
+    ),
     quantity: float = typer.Argument(..., help="Order quantity."),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
-    exchange: str = typer.Option("SMART", "--exchange", help="Exchange to use for contract qualification."),
-    currency: str = typer.Option("USD", "--currency", help="Currency to use for contract qualification."),
+    exchange: str = typer.Option("SMART", "--exchange", help="Exchange override for contract qualification."),
+    currency: str = typer.Option("USD", "--currency", help="Currency override for stock and futures qualification."),
     order_type: str = typer.Option("MKT", "--type", help="Order type: MKT, LMT, STP, STP LMT, or TRAIL."),
     limit_price: Optional[float] = typer.Option(None, "--limit", help="Limit price (required for LMT / STP LMT)."),
     stop_price: Optional[float] = typer.Option(None, "--stop", help="Stop trigger price (required for STP / STP LMT, optional for TRAIL)."),
