@@ -509,6 +509,26 @@ def get_executions(
 
 
 _SUPPORTED_ORDER_TYPES = ("MKT", "LMT", "STP", "STP LMT", "TRAIL")
+_DONE_ORDER_STATUSES = {"Filled", "Cancelled", "ApiCancelled", "Inactive"}
+
+
+def _wait_for_trade_resolution(ib: object, trade: object, timeout: float) -> None:
+    """Wait for the order to finish or until the caller's operation timeout expires."""
+    if timeout <= 0:
+        return
+
+    started = time.monotonic()
+    while True:
+        status = getattr(getattr(trade, "orderStatus", None), "status", None)
+        if status in _DONE_ORDER_STATUSES:
+            return
+
+        elapsed = time.monotonic() - started
+        remaining = timeout - elapsed
+        if remaining <= 0:
+            return
+
+        ib.waitOnUpdate(timeout=min(remaining, 0.5))
 
 
 def _prepare_stock_order(
@@ -889,7 +909,7 @@ def submit_stock_order(
                     tp_trade = ib.placeOrder(qualified_contract, tp_order)
                     sl_trade = ib.placeOrder(qualified_contract, sl_order)
                     trades = [parent_trade, tp_trade, sl_trade]
-                    ib.waitOnUpdate(timeout=min(timeout, 0.75))
+                    _wait_for_trade_resolution(ib, trades[0], timeout)
 
             parent_payload = _trade_payload(trades[0], managed_accounts, selected_account, raw_errors, "submit")
             parent_payload["bracket"] = {
@@ -918,7 +938,7 @@ def submit_stock_order(
             with _capture_ib_errors(ib) as raw_errors:
                 with _suppress_ib_async_logs():
                     trade = ib.placeOrder(qualified_contract, order)
-                    ib.waitOnUpdate(timeout=min(timeout, 0.75))
+                    _wait_for_trade_resolution(ib, trade, timeout)
 
             return _trade_payload(trade, managed_accounts, selected_account, raw_errors, "submit")
 
@@ -954,7 +974,7 @@ def cancel_open_order(
                 cancelled_trade = ib.cancelOrder(target_trade.order)
                 if cancelled_trade is None:
                     raise RuntimeError(f"Unable to cancel order '{order_id}'.")
-                ib.waitOnUpdate(timeout=min(timeout, 0.75))
+                _wait_for_trade_resolution(ib, cancelled_trade, timeout)
 
         return _trade_payload(cancelled_trade, managed_accounts, selected_account, raw_errors, "cancel")
 
@@ -1053,7 +1073,7 @@ def modify_order(
         with _capture_ib_errors(ib) as raw_errors:
             with _suppress_ib_async_logs():
                 modified_trade = ib.placeOrder(contract, order)
-                ib.waitOnUpdate(timeout=min(timeout, 0.75))
+                _wait_for_trade_resolution(ib, modified_trade, timeout)
 
         return _trade_payload(modified_trade, managed_accounts, selected_account, raw_errors, "modify")
 
