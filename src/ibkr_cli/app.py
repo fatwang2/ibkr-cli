@@ -5,6 +5,7 @@ import subprocess
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
+from collections import defaultdict
 
 import typer
 from rich.console import Console
@@ -719,7 +720,16 @@ def account_summary(
         return
 
     console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
-    console.print(render_account_summary_table(payload["rows"], str(payload["selected_account"])))
+    if payload["selected_account"]:
+        console.print(render_account_summary_table(payload["rows"], str(payload["selected_account"])))
+    else:
+        grouped_rows: Dict[str, List[Dict[str, object]]] = defaultdict(list)
+        for row in payload["rows"]:
+            grouped_rows[str(row["account"])].append(row)
+        for index, account_key in enumerate(sorted(grouped_rows)):
+            if index:
+                console.print()
+            console.print(render_account_summary_table(grouped_rows[account_key], account_key))
 
 
 @app.command()
@@ -948,11 +958,14 @@ def execute_trade_command(
 
 @app.command()
 def buy(
-    symbol: str = typer.Argument(..., help="Ticker symbol, for example AAPL."),
+    symbol: str = typer.Argument(
+        ...,
+        help="Trading symbol. Examples: AAPL (stock), USDJPY (forex), ESZ6 (future), SPY260417C700 (option).",
+    ),
     quantity: float = typer.Argument(..., help="Order quantity."),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
-    exchange: str = typer.Option("SMART", "--exchange", help="Exchange to use for contract qualification."),
-    currency: str = typer.Option("USD", "--currency", help="Currency to use for contract qualification."),
+    exchange: str = typer.Option("SMART", "--exchange", help="Exchange override for contract qualification."),
+    currency: str = typer.Option("USD", "--currency", help="Currency override for stock and futures qualification."),
     order_type: str = typer.Option("MKT", "--type", help="Order type: MKT, LMT, STP, STP LMT, or TRAIL."),
     limit_price: Optional[float] = typer.Option(None, "--limit", help="Limit price (required for LMT / STP LMT)."),
     stop_price: Optional[float] = typer.Option(None, "--stop", help="Stop trigger price (required for STP / STP LMT, optional for TRAIL)."),
@@ -978,11 +991,14 @@ def buy(
 
 @app.command()
 def sell(
-    symbol: str = typer.Argument(..., help="Ticker symbol, for example AAPL."),
+    symbol: str = typer.Argument(
+        ...,
+        help="Trading symbol. Examples: AAPL (stock), USDJPY (forex), ESZ6 (future), SPY260417C700 (option).",
+    ),
     quantity: float = typer.Argument(..., help="Order quantity."),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
-    exchange: str = typer.Option("SMART", "--exchange", help="Exchange to use for contract qualification."),
-    currency: str = typer.Option("USD", "--currency", help="Currency to use for contract qualification."),
+    exchange: str = typer.Option("SMART", "--exchange", help="Exchange override for contract qualification."),
+    currency: str = typer.Option("USD", "--currency", help="Currency override for stock and futures qualification."),
     order_type: str = typer.Option("MKT", "--type", help="Order type: MKT, LMT, STP, STP LMT, or TRAIL."),
     limit_price: Optional[float] = typer.Option(None, "--limit", help="Limit price (required for LMT / STP LMT)."),
     stop_price: Optional[float] = typer.Option(None, "--stop", help="Stop trigger price (required for STP / STP LMT, optional for TRAIL)."),

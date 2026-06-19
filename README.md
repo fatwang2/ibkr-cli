@@ -98,34 +98,60 @@ ibkr connect test --profile gateway-paper
 
 ### Account and positions
 
+If a profile is connected to multiple managed accounts, pass `--account` to target a specific account:
+
 ```bash
 ibkr account summary --profile gateway-paper
+ibkr account summary --profile gateway-paper --account U123456789
 ibkr positions --profile gateway-paper
+ibkr positions --profile gateway-paper --account U123456789
 ```
 
 ### Orders
 
 ```bash
 ibkr orders open --profile gateway-paper
+ibkr orders open --profile gateway-paper --account U123456789
 ibkr orders completed --profile gateway-paper
 ibkr orders executions --profile gateway-paper
-ibkr orders cancel 12345 --profile gateway-paper
-ibkr orders modify 12345 --limit 150.50 --profile gateway-paper
+ibkr orders cancel 12345 --profile gateway-paper --account U123456789
+ibkr orders modify 12345 --limit 150.50 --profile gateway-paper --account U123456789
 ```
 
 ### Trading
+
+Trading commands auto-detect a subset of contract types from `symbol`:
+
+- `AAPL` -> stock
+- `SPY260417C00700000` / `SPY260417C700` / `SPY260417C720.5` -> option on `SMART`
+- `USDJPY` -> forex on `IDEALPRO`
+- `ESZ6` -> future
+
+Option symbols support the no-space OCC format and a simplified strike format:
+
+- `SPY260417C00700000` -> standard OCC strike encoding
+- `SPY260417C700` -> strike `700.0`
+- `SPY260417C720.5` -> strike `720.5`, equivalent to OCC strike `00720500`
+
+Symbols that do not match an option, forex, or future pattern are treated as stocks.
 
 Preview first:
 
 ```bash
 ibkr buy AAPL 10 --preview --profile gateway-live
+ibkr buy AAPL 10 --preview --profile gateway-live --account U123456789
 ibkr sell AAPL 10 --preview --profile gateway-live
+ibkr buy SPY260417C00700000 1 --preview --profile gateway-live
+ibkr buy "SPY260417C720.5" 1 --preview --profile gateway-live
+ibkr buy USDJPY 1000 --preview --profile gateway-live
+ibkr buy ESZ6 1 --preview --profile gateway-live
 ```
 
 Submit only when you explicitly intend to place an order:
 
 ```bash
 ibkr buy AAPL 10 --submit --profile gateway-live
+ibkr buy AAPL 10 --submit --profile gateway-live --account U123456789
 ibkr sell AAPL 10 --submit --profile gateway-live
 ```
 
