@@ -30,9 +30,7 @@ from ibkr_cli.flex_service import (
     get_flex_transfers,
 )
 from ibkr_cli.ib_service import (
-    ApiConnectionResult,
     cancel_open_order,
-    check_api_connection,
     modify_order,
     get_account_summary,
     get_completed_orders,
@@ -52,6 +50,7 @@ from ibkr_cli.ib_service import (
     get_positions,
     get_quote_snapshot,
     preview_stock_order,
+    probe_api_connection,
     run_scanner,
     submit_stock_order,
     watch_quote,
@@ -62,7 +61,6 @@ from ibkr_cli.version_check import _parse_version, check_for_update, run_update
 console = Console()
 app = typer.Typer(no_args_is_help=True, help="A local-first CLI for Interactive Brokers.")
 profile_app = typer.Typer(no_args_is_help=True, help="Manage local connection profiles.")
-connect_app = typer.Typer(no_args_is_help=True, help="Connectivity checks for TWS or IB Gateway.")
 account_app = typer.Typer(no_args_is_help=True, help="Account-related read operations.")
 orders_app = typer.Typer(no_args_is_help=True, help="Order-related read operations.")
 news_app = typer.Typer(no_args_is_help=True, help="News headlines and articles.")
@@ -71,7 +69,6 @@ scanner_app = typer.Typer(no_args_is_help=True, help="Market scanner and screene
 fundamentals_app = typer.Typer(no_args_is_help=True, help="Company fundamentals and financial data (requires Reuters Fundamentals subscription).")
 config_app = typer.Typer(no_args_is_help=True, help="View and update CLI configuration.")
 app.add_typer(profile_app, name="profile")
-app.add_typer(connect_app, name="connect")
 app.add_typer(account_app, name="account")
 app.add_typer(orders_app, name="orders")
 app.add_typer(news_app, name="news")
@@ -249,19 +246,22 @@ def render_connection_result(result: ConnectionResult) -> Table:
     return table
 
 
-def render_api_connection_result(result: ApiConnectionResult) -> Table:
+def render_api_connection_result(result: Dict[str, object]) -> Table:
     table = Table(title="IBKR API Connectivity")
     table.add_column("Field", style="cyan")
     table.add_column("Value")
-    table.add_row("host", result.host)
-    table.add_row("port", str(result.port))
-    table.add_row("client_id", str(result.client_id))
-    table.add_row("timeout", str(result.timeout))
-    table.add_row("reachable", "yes" if result.ok else "no")
-    table.add_row("latency_ms", "-" if result.latency_ms is None else str(result.latency_ms))
-    table.add_row("server_version", "-" if result.server_version is None else str(result.server_version))
-    table.add_row("managed_accounts", ", ".join(result.managed_accounts))
-    table.add_row("error", result.error or "")
+    table.add_row("host", str(result["host"]))
+    table.add_row("port", str(result["port"]))
+    table.add_row("client_id", str(result["client_id"]))
+    table.add_row("timeout", str(result["timeout"]))
+    table.add_row("reachable", "yes" if result["ok"] else "no")
+    latency = result.get("latency_ms")
+    table.add_row("latency_ms", "-" if latency is None else str(latency))
+    server_version = result.get("server_version")
+    table.add_row("server_version", "-" if server_version is None else str(server_version))
+    managed = result.get("managed_accounts") or []
+    table.add_row("managed_accounts", ", ".join(managed))
+    table.add_row("error", str(result.get("error") or ""))
     return table
 
 
@@ -552,12 +552,16 @@ def print_json(payload: Dict[str, object]) -> None:
 def doctor(
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to inspect."),
     check_port: bool = typer.Option(True, "--check-port/--no-check-port", help="Check whether the configured port is reachable."),
+    check_api: bool = typer.Option(False, "--api/--no-api", help="Verify the IBKR API handshake (opens a real connection using the profile's client_id)."),
     json_output: bool = typer.Option(False, "--json", help="Output JSON instead of tables."),
 ) -> None:
     config, exists, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
     connection_result = None
     if check_port:
         connection_result = test_tcp_connection(selected_profile.host, selected_profile.port)
+    api_result = None
+    if check_api:
+        api_result = probe_api_connection(selected_profile)
 
     payload = {
         "version": package_version(),
@@ -575,25 +579,31 @@ def doctor(
             for name, current in sorted(config.profiles.items())
         ],
         "port_check": connection_result.to_dict() if connection_result else None,
+        "api_check": api_result,
     }
+    api_failed = bool(check_api and api_result and not api_result.get("ok"))
 
     if json_output:
         print_json(payload)
-        return
+    else:
+        table = Table(title="Doctor")
+        table.add_column("Field", style="cyan")
+        table.add_column("Value")
+        table.add_row("version", str(payload["version"]))
+        table.add_row("python", str(payload["python"]))
+        table.add_row("config_file", str(payload["config_file"]))
+        table.add_row("config_exists", "yes" if exists else "no")
+        table.add_row("default_profile", config.default_profile)
+        table.add_row("selected_profile", selected_name)
+        console.print(table)
+        console.print(render_profiles_table(config))
+        if connection_result:
+            console.print(render_connection_result(connection_result))
+        if api_result:
+            console.print(render_api_connection_result(api_result))
 
-    table = Table(title="Doctor")
-    table.add_column("Field", style="cyan")
-    table.add_column("Value")
-    table.add_row("version", str(payload["version"]))
-    table.add_row("python", str(payload["python"]))
-    table.add_row("config_file", str(payload["config_file"]))
-    table.add_row("config_exists", "yes" if exists else "no")
-    table.add_row("default_profile", config.default_profile)
-    table.add_row("selected_profile", selected_name)
-    console.print(table)
-    console.print(render_profiles_table(config))
-    if connection_result:
-        console.print(render_connection_result(connection_result))
+    if api_failed:
+        raise typer.Exit(code=EXIT_CODE_CONNECTIVITY)
 
 
 @profile_app.command("init")
@@ -635,53 +645,6 @@ def profile_show(
         print_json(payload)
         return
     console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
-
-
-@connect_app.command("test")
-def connect_test(
-    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to test."),
-    timeout: float = typer.Option(2.0, "--timeout", min=0.1, help="Socket timeout in seconds."),
-    tcp_check: bool = typer.Option(True, "--tcp/--no-tcp", help="Run a raw TCP port check."),
-    api_check: bool = typer.Option(True, "--api/--no-api", help="Run an IBKR API handshake check."),
-    json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
-) -> None:
-    config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
-    if not tcp_check and not api_check:
-        exit_with_error(
-            "At least one of --tcp or --api must be enabled.",
-            code=ERROR_INVALID_ARGUMENTS,
-            exit_code=EXIT_CODE_USAGE,
-            json_output=json_output,
-            details={"tcp": tcp_check, "api": api_check},
-        )
-
-    tcp_result = test_tcp_connection(selected_profile.host, selected_profile.port, timeout=timeout) if tcp_check else None
-    api_result = check_api_connection(selected_profile, timeout=timeout) if api_check else None
-
-    payload = {
-        "profile": selected_name,
-        "tcp_connection": tcp_result.to_dict() if tcp_result else None,
-        "api_connection": api_result.to_dict() if api_result else None,
-    }
-    connectivity_failed = (tcp_result and not tcp_result.ok) or (api_result and not api_result.ok)
-    if json_output and not connectivity_failed:
-        print_json(payload)
-    elif json_output and connectivity_failed:
-        exit_with_error(
-            f"Connectivity checks failed for profile '{selected_name}'.",
-            code=ERROR_CONNECTIVITY_CHECK_FAILED,
-            exit_code=EXIT_CODE_CONNECTIVITY,
-            json_output=True,
-            details=payload,
-        )
-    else:
-        console.print(render_profile_detail(selected_name, selected_profile, selected_name == config.default_profile))
-        if tcp_result:
-            console.print(render_connection_result(tcp_result))
-        if api_result:
-            console.print(render_api_connection_result(api_result))
-    if connectivity_failed:
-        raise typer.Exit(code=EXIT_CODE_CONNECTIVITY)
 
 
 @account_app.command("summary")

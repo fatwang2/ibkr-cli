@@ -6,7 +6,6 @@ import re
 import time
 import xml.etree.ElementTree as ET
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
 from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from datetime import datetime, timezone
@@ -25,22 +24,6 @@ DEFAULT_ACCOUNT_SUMMARY_TAGS = (
     "UnrealizedPnL",
     "RealizedPnL",
 )
-
-
-@dataclass(frozen=True)
-class ApiConnectionResult:
-    ok: bool
-    host: str
-    port: int
-    client_id: int
-    timeout: float
-    managed_accounts: List[str]
-    latency_ms: Optional[float] = None
-    server_version: Optional[int] = None
-    error: Optional[str] = None
-
-    def to_dict(self) -> Dict[str, object]:
-        return asdict(self)
 
 
 def _ib_class() -> Tuple[object, object]:
@@ -123,6 +106,23 @@ def _suppress_ib_async_logs() -> Iterator[None]:
             logger.setLevel(previous_level)
 
 
+def _safe_disconnect(ib: object) -> None:
+    """Always tear down the connection, even if the API handshake never completed.
+
+    ib_async only reports isConnected() as True after the full handshake, so
+    gating disconnect on it leaks the underlying TCP socket whenever connect()
+    times out mid-handshake. Those half-open sockets keep the client_id marked
+    in-use and pile up until IB Gateway's API thread wedges.
+    """
+    disconnect = getattr(ib, "disconnect", None)
+    if disconnect is None:
+        return
+    try:
+        disconnect()
+    except Exception:
+        pass
+
+
 @contextmanager
 def ib_session(profile: ProfileConfig, timeout: float = 4.0, readonly: bool = True) -> Iterator[object]:
     ib_class, startup_fetch_none = _ib_class()
@@ -139,53 +139,39 @@ def ib_session(profile: ProfileConfig, timeout: float = 4.0, readonly: bool = Tr
             )
         yield ib
     finally:
-        if getattr(ib, "isConnected", None) and ib.isConnected():
-            ib.disconnect()
+        _safe_disconnect(ib)
 
 
-def check_api_connection(profile: ProfileConfig, timeout: float = 4.0) -> ApiConnectionResult:
-    ib_class, startup_fetch_none = _ib_class()
-    ib = ib_class()
+def probe_api_connection(profile: ProfileConfig, timeout: float = 4.0) -> Dict[str, object]:
+    """Verify the full IBKR API handshake by opening a real ``ib_session``.
+
+    Routes through the canonical connection path so the connect parameters and
+    socket teardown stay identical to every other command — there is no second
+    copy of the connect logic to drift out of sync (or to grow its own leak).
+    """
+    result: Dict[str, object] = {
+        "ok": False,
+        "host": profile.host,
+        "port": profile.port,
+        "client_id": profile.client_id,
+        "timeout": timeout,
+        "latency_ms": None,
+        "server_version": None,
+        "managed_accounts": [],
+        "error": None,
+    }
     started = time.perf_counter()
     try:
-        with _suppress_ib_async_logs():
-            ib.connect(
-                profile.host,
-                profile.port,
-                clientId=profile.client_id,
-                timeout=timeout,
-                readonly=True,
-                fetchFields=startup_fetch_none,
-            )
-        latency_ms = round((time.perf_counter() - started) * 1000, 2)
-        managed_accounts = list(ib.managedAccounts())
-        server_version = None
-        client = getattr(ib, "client", None)
-        if client and hasattr(client, "serverVersion"):
-            server_version = client.serverVersion()
-        return ApiConnectionResult(
-            ok=True,
-            host=profile.host,
-            port=profile.port,
-            client_id=profile.client_id,
-            timeout=timeout,
-            managed_accounts=managed_accounts,
-            latency_ms=latency_ms,
-            server_version=server_version,
-        )
+        with ib_session(profile, timeout=timeout) as ib:
+            result["latency_ms"] = round((time.perf_counter() - started) * 1000, 2)
+            client = getattr(ib, "client", None)
+            if client is not None and hasattr(client, "serverVersion"):
+                result["server_version"] = client.serverVersion()
+            result["managed_accounts"] = list(ib.managedAccounts())
+            result["ok"] = True
     except Exception as exc:
-        return ApiConnectionResult(
-            ok=False,
-            host=profile.host,
-            port=profile.port,
-            client_id=profile.client_id,
-            timeout=timeout,
-            managed_accounts=[],
-            error=str(exc),
-        )
-    finally:
-        if getattr(ib, "isConnected", None) and ib.isConnected():
-            ib.disconnect()
+        result["error"] = str(exc)
+    return result
 
 
 def _resolve_account(ib: object, requested_account: Optional[str]) -> tuple[List[str], str]:

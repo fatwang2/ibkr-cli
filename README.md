@@ -91,8 +91,10 @@ ibkr profile show gateway-paper
 
 ```bash
 ibkr doctor --profile gateway-paper
-ibkr connect test --profile gateway-paper
+ibkr doctor --api --profile gateway-paper
 ```
+
+The plain `doctor` reports config and TCP reachability; adding `--api` verifies the full IBKR API handshake and exits non-zero if it fails.
 
 ## Core commands
 
