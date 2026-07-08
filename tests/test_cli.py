@@ -220,6 +220,7 @@ class CliTests(unittest.TestCase):
                 "trail_percent": None,
                 "take_profit_price": None,
                 "stop_loss_price": None,
+                "order_ref": None,
             },
         )
 
