@@ -275,6 +275,7 @@ def get_open_orders(
     profile: ProfileConfig,
     timeout: float = 4.0,
     account: Optional[str] = None,
+    order_ref_prefix: Optional[str] = None,
 ) -> Dict[str, object]:
     with ib_session(profile, timeout=timeout) as ib:
         managed_accounts = list(ib.managedAccounts())
@@ -307,12 +308,14 @@ def get_open_orders(
                     "limit_price": _normalize_number(order.lmtPrice),
                     "aux_price": _normalize_number(order.auxPrice),
                     "tif": order.tif,
+                    "order_ref": _order_ref_value(order),
                     "status": status.status,
                     "filled": _normalize_number(status.filled),
                     "remaining": _normalize_number(status.remaining),
                 }
             )
 
+        rows = _filter_rows_by_order_ref_prefix(rows, order_ref_prefix)
         rows.sort(
             key=lambda row: (
                 str(row["account"]),
@@ -324,6 +327,7 @@ def get_open_orders(
         return {
             "managed_accounts": managed_accounts,
             "selected_account": account,
+            "order_ref_prefix": order_ref_prefix,
             "rows": rows,
         }
 
@@ -333,6 +337,7 @@ def get_completed_orders(
     timeout: float = 4.0,
     account: Optional[str] = None,
     api_only: bool = False,
+    order_ref_prefix: Optional[str] = None,
 ) -> Dict[str, object]:
     with ib_session(profile, timeout=timeout) as ib:
         managed_accounts = list(ib.managedAccounts())
@@ -412,6 +417,7 @@ def get_completed_orders(
                     "limit_price": _normalize_number(order.lmtPrice),
                     "aux_price": _normalize_number(order.auxPrice),
                     "tif": order.tif,
+                    "order_ref": _order_ref_value(order),
                     "status": status.status,
                     "filled": filled,
                     "remaining": remaining,
@@ -419,6 +425,7 @@ def get_completed_orders(
                 }
             )
 
+        rows = _filter_rows_by_order_ref_prefix(rows, order_ref_prefix)
         rows.sort(
             key=lambda row: (
                 str(row["account"]),
@@ -431,6 +438,7 @@ def get_completed_orders(
             "managed_accounts": managed_accounts,
             "selected_account": account,
             "api_only": api_only,
+            "order_ref_prefix": order_ref_prefix,
             "rows": rows,
         }
 
@@ -439,6 +447,7 @@ def get_executions(
     profile: ProfileConfig,
     timeout: float = 4.0,
     account: Optional[str] = None,
+    order_ref_prefix: Optional[str] = None,
 ) -> Dict[str, object]:
     with ib_session(profile, timeout=timeout) as ib:
         managed_accounts = list(ib.managedAccounts())
@@ -472,12 +481,14 @@ def get_executions(
                     "price": _normalize_number(execution.price),
                     "cum_qty": _normalize_number(execution.cumQty),
                     "avg_price": _normalize_number(execution.avgPrice),
+                    "order_ref": _order_ref_value(execution),
                     "commission": _normalize_number(commission_report.commission),
                     "commission_currency": commission_report.currency,
                     "realized_pnl": _normalize_number(commission_report.realizedPNL),
                 }
             )
 
+        rows = _filter_rows_by_order_ref_prefix(rows, order_ref_prefix)
         rows.sort(
             key=lambda row: (
                 str(row["account"]),
@@ -490,11 +501,46 @@ def get_executions(
         return {
             "managed_accounts": managed_accounts,
             "selected_account": account,
+            "order_ref_prefix": order_ref_prefix,
             "rows": rows,
         }
 
 
 _SUPPORTED_ORDER_TYPES = ("MKT", "LMT", "STP", "STP LMT", "TRAIL")
+
+
+def normalize_order_ref(order_ref: Optional[str]) -> Optional[str]:
+    """Validate and normalize an IBKR orderRef string."""
+    if order_ref is None:
+        return None
+    normalized = order_ref.strip()
+    if not normalized:
+        raise ValueError("--order-ref cannot be empty or whitespace-only.")
+    return normalized
+
+
+def _order_ref_value(order_or_execution: object) -> Optional[str]:
+    value = getattr(order_or_execution, "orderRef", None) or None
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _filter_rows_by_order_ref_prefix(
+    rows: List[Dict[str, object]],
+    order_ref_prefix: Optional[str],
+) -> List[Dict[str, object]]:
+    if order_ref_prefix is None:
+        return rows
+    prefix = order_ref_prefix.strip()
+    if not prefix:
+        raise ValueError("--order-ref-prefix cannot be empty or whitespace-only.")
+    return [
+        row
+        for row in rows
+        if isinstance(row.get("order_ref"), str) and row["order_ref"].startswith(prefix)
+    ]
 
 
 def _prepare_stock_order(
@@ -512,6 +558,7 @@ def _prepare_stock_order(
     stop_price: Optional[float] = None,
     trail_stop_price: Optional[float] = None,
     trail_percent: Optional[float] = None,
+    order_ref: Optional[str] = None,
 ) -> tuple[List[str], str, object, object]:
     try:
         from ib_async import LimitOrder, MarketOrder, Order, StopLimitOrder, StopOrder, Stock
@@ -575,6 +622,9 @@ def _prepare_stock_order(
 
     qualified_contract = qualified[0]
     common_kwargs = dict(tif=normalized_tif, outsideRth=outside_rth, account=selected_account)
+    normalized_order_ref = normalize_order_ref(order_ref)
+    if normalized_order_ref:
+        common_kwargs["orderRef"] = normalized_order_ref
 
     if normalized_order_type == "LMT":
         order = LimitOrder(normalized_action, quantity, limit_price, **common_kwargs)
@@ -615,6 +665,7 @@ def _prepare_bracket_order(
     account: Optional[str],
     take_profit_price: float,
     stop_loss_price: float,
+    order_ref: Optional[str] = None,
 ) -> tuple[List[str], str, object, list]:
     try:
         from ib_async import LimitOrder, MarketOrder, StopOrder, Stock
@@ -665,6 +716,12 @@ def _prepare_bracket_order(
     stop_loss = StopOrder(reverse_action, quantity, stop_loss_price, **common_kwargs)
     stop_loss.transmit = True  # last child transmits the whole bracket
 
+    normalized_order_ref = normalize_order_ref(order_ref)
+    if normalized_order_ref:
+        parent.orderRef = normalized_order_ref
+        take_profit.orderRef = f"{normalized_order_ref}-tp"
+        stop_loss.orderRef = f"{normalized_order_ref}-sl"
+
     return managed_accounts, selected_account, qualified_contract, [parent, take_profit, stop_loss]
 
 
@@ -700,6 +757,7 @@ def _trade_payload(
         "parent_id": order.parentId if order.parentId else None,
         "tif": order.tif,
         "outside_rth": bool(order.outsideRth),
+        "order_ref": _order_ref_value(order),
         "order_id": order.orderId,
         "perm_id": order.permId,
         "client_id": order.clientId,
@@ -733,6 +791,7 @@ def preview_stock_order(
     trail_percent: Optional[float] = None,
     take_profit_price: Optional[float] = None,
     stop_loss_price: Optional[float] = None,
+    order_ref: Optional[str] = None,
 ) -> Dict[str, object]:
     is_bracket = take_profit_price is not None or stop_loss_price is not None
     with ib_session(profile, timeout=timeout, readonly=False) as ib:
@@ -753,6 +812,7 @@ def preview_stock_order(
                 account=account,
                 take_profit_price=take_profit_price,
                 stop_loss_price=stop_loss_price,
+                order_ref=order_ref,
             )
             order = orders[0]  # preview the parent order
             order.transmit = True  # override for whatIfOrder preview
@@ -772,6 +832,7 @@ def preview_stock_order(
                 stop_price=stop_price,
                 trail_stop_price=trail_stop_price,
                 trail_percent=trail_percent,
+                order_ref=order_ref,
             )
 
         matcher = lambda current_contract: current_contract is not None and getattr(current_contract, "conId", None) == qualified_contract.conId
@@ -799,6 +860,7 @@ def preview_stock_order(
             "trailing_percent": _normalize_number(getattr(order, "trailingPercent", None)),
             "tif": order.tif,
             "outside_rth": outside_rth,
+            "order_ref": _order_ref_value(order),
             "status": state.status,
             "init_margin_before": _normalize_number(state.initMarginBefore),
             "init_margin_change": _normalize_number(state.initMarginChange),
@@ -843,6 +905,7 @@ def submit_stock_order(
     trail_percent: Optional[float] = None,
     take_profit_price: Optional[float] = None,
     stop_loss_price: Optional[float] = None,
+    order_ref: Optional[str] = None,
 ) -> Dict[str, object]:
     is_bracket = take_profit_price is not None or stop_loss_price is not None
     with ib_session(profile, timeout=timeout, readonly=False) as ib:
@@ -863,6 +926,7 @@ def submit_stock_order(
                 account=account,
                 take_profit_price=take_profit_price,
                 stop_loss_price=stop_loss_price,
+                order_ref=order_ref,
             )
             with _capture_ib_errors(ib) as raw_errors:
                 with _suppress_ib_async_logs():
@@ -899,6 +963,7 @@ def submit_stock_order(
                 stop_price=stop_price,
                 trail_stop_price=trail_stop_price,
                 trail_percent=trail_percent,
+                order_ref=order_ref,
             )
 
             with _capture_ib_errors(ib) as raw_errors:
@@ -974,6 +1039,7 @@ def _build_clean_modify_order(source_order: object) -> object:
     order.tif = source_order.tif
     order.outsideRth = source_order.outsideRth
     order.account = source_order.account
+    order.orderRef = getattr(source_order, "orderRef", "") or ""
     # Bracket / OCA linkage
     order.parentId = source_order.parentId
     order.ocaGroup = source_order.ocaGroup

@@ -165,6 +165,19 @@ ibkr buy AAPL 10 --take-profit 160.00 --stop-loss 140.00 --preview --profile gat
 ibkr buy AAPL 10 --type LMT --limit 150.00 --take-profit 160.00 --stop-loss 140.00 --preview --profile gateway-live
 ```
 
+#### Order reference (`orderRef`)
+
+Tag orders with IBKR's native `orderRef` for ownership / multi-strategy filtering:
+
+```bash
+ibkr sell AAPL 10 --type LMT --limit 150.00 --order-ref fr-AAPL-20260708143000 --submit --profile gateway-paper
+ibkr orders open --order-ref-prefix fr- --profile gateway-paper
+ibkr orders completed --order-ref-prefix fr- --profile gateway-paper
+ibkr orders executions --order-ref-prefix fr- --profile gateway-paper
+```
+
+`--order-ref` is stored as TWS API `orderRef` for the order's lifetime and returned on open/completed orders and executions as `order_ref`. Bracket children use `{order-ref}-tp` / `{order-ref}-sl`.
+
 ### Update
 
 The CLI automatically checks for new versions once a day. To manually check and upgrade:

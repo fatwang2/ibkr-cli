@@ -308,6 +308,7 @@ def render_open_orders_table(rows: Sequence[Dict[str, object]], account: Optiona
     table.add_column("Action")
     table.add_column("Qty", justify="right")
     table.add_column("Limit", justify="right")
+    table.add_column("Order Ref")
     table.add_column("Status")
     table.add_column("Filled", justify="right")
     table.add_column("Remaining", justify="right")
@@ -320,6 +321,7 @@ def render_open_orders_table(rows: Sequence[Dict[str, object]], account: Optiona
             str(row["action"]),
             "" if row["quantity"] is None else str(row["quantity"]),
             "" if row["limit_price"] is None else str(row["limit_price"]),
+            "" if row["order_ref"] is None else str(row["order_ref"]),
             str(row["status"]),
             "" if row["filled"] is None else str(row["filled"]),
             "" if row["remaining"] is None else str(row["remaining"]),
@@ -335,6 +337,7 @@ def render_completed_orders_table(rows: Sequence[Dict[str, object]], account: Op
     table.add_column("Type")
     table.add_column("Action")
     table.add_column("Qty", justify="right")
+    table.add_column("Order Ref")
     table.add_column("Status")
     table.add_column("Avg Fill", justify="right")
     for row in rows:
@@ -345,6 +348,7 @@ def render_completed_orders_table(rows: Sequence[Dict[str, object]], account: Op
             str(row["order_type"]),
             str(row["action"]),
             "" if row["quantity"] is None else str(row["quantity"]),
+            "" if row["order_ref"] is None else str(row["order_ref"]),
             str(row["status"]),
             "" if row["avg_fill_price"] is None else str(row["avg_fill_price"]),
         )
@@ -360,6 +364,7 @@ def render_executions_table(rows: Sequence[Dict[str, object]], account: Optional
     table.add_column("Side")
     table.add_column("Shares", justify="right")
     table.add_column("Price", justify="right")
+    table.add_column("Order Ref")
     table.add_column("Commission", justify="right")
     table.add_column("Realized PnL", justify="right")
     for row in rows:
@@ -371,6 +376,7 @@ def render_executions_table(rows: Sequence[Dict[str, object]], account: Optional
             str(row["side"]),
             "" if row["shares"] is None else str(row["shares"]),
             "" if row["price"] is None else str(row["price"]),
+            "" if row["order_ref"] is None else str(row["order_ref"]),
             "" if row["commission"] is None else str(row["commission"]),
             "" if row["realized_pnl"] is None else str(row["realized_pnl"]),
         )
@@ -399,6 +405,7 @@ def render_order_preview_table(payload: Dict[str, object]) -> Table:
         "trailing_percent",
         "tif",
         "outside_rth",
+        "order_ref",
         "status",
         "init_margin_before",
         "init_margin_change",
@@ -445,6 +452,7 @@ def render_trade_result_table(payload: Dict[str, object]) -> Table:
         "parent_id",
         "tif",
         "outside_rth",
+        "order_ref",
         "order_id",
         "perm_id",
         "client_id",
@@ -721,19 +729,29 @@ def positions(
 def orders_open(
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
     account: Optional[str] = typer.Option(None, "--account", help="IBKR account identifier."),
+    order_ref_prefix: Optional[str] = typer.Option(
+        None,
+        "--order-ref-prefix",
+        help="Only include orders whose orderRef starts with this prefix.",
+    ),
     timeout: float = typer.Option(4.0, "--timeout", min=0.1, help="API timeout in seconds."),
     json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
 ) -> None:
     config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
     try:
-        payload = get_open_orders(selected_profile, timeout=timeout, account=account)
+        payload = get_open_orders(
+            selected_profile,
+            timeout=timeout,
+            account=account,
+            order_ref_prefix=order_ref_prefix,
+        )
     except Exception as exc:
         exit_with_error(
             f"Failed to fetch open orders via profile '{selected_name}': {exc}",
             code=ERROR_ORDER_QUERY_FAILED,
             exit_code=EXIT_CODE_API,
             json_output=json_output,
-            details={"profile": selected_name, "account": account},
+            details={"profile": selected_name, "account": account, "order_ref_prefix": order_ref_prefix},
         )
         return
 
@@ -754,6 +772,11 @@ def orders_completed(
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
     account: Optional[str] = typer.Option(None, "--account", help="IBKR account identifier."),
     api_only: bool = typer.Option(False, "--api-only", help="Only include API-originated orders."),
+    order_ref_prefix: Optional[str] = typer.Option(
+        None,
+        "--order-ref-prefix",
+        help="Only include orders whose orderRef starts with this prefix.",
+    ),
     timeout: float = typer.Option(4.0, "--timeout", min=0.1, help="API timeout in seconds."),
     json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
 ) -> None:
@@ -764,6 +787,7 @@ def orders_completed(
             timeout=timeout,
             account=account,
             api_only=api_only,
+            order_ref_prefix=order_ref_prefix,
         )
     except Exception as exc:
         exit_with_error(
@@ -771,7 +795,12 @@ def orders_completed(
             code=ERROR_ORDER_QUERY_FAILED,
             exit_code=EXIT_CODE_API,
             json_output=json_output,
-            details={"profile": selected_name, "account": account, "api_only": api_only},
+            details={
+                "profile": selected_name,
+                "account": account,
+                "api_only": api_only,
+                "order_ref_prefix": order_ref_prefix,
+            },
         )
         return
 
@@ -791,19 +820,29 @@ def orders_completed(
 def orders_executions(
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Profile name to use."),
     account: Optional[str] = typer.Option(None, "--account", help="IBKR account identifier."),
+    order_ref_prefix: Optional[str] = typer.Option(
+        None,
+        "--order-ref-prefix",
+        help="Only include executions whose orderRef starts with this prefix.",
+    ),
     timeout: float = typer.Option(4.0, "--timeout", min=0.1, help="API timeout in seconds."),
     json_output: bool = typer.Option(False, "--json", help="Output JSON instead of a table."),
 ) -> None:
     config, _, selected_name, selected_profile = resolve_profile_or_exit(profile, json_output=json_output)
     try:
-        payload = get_executions(selected_profile, timeout=timeout, account=account)
+        payload = get_executions(
+            selected_profile,
+            timeout=timeout,
+            account=account,
+            order_ref_prefix=order_ref_prefix,
+        )
     except Exception as exc:
         exit_with_error(
             f"Failed to fetch executions via profile '{selected_name}': {exc}",
             code=ERROR_ORDER_QUERY_FAILED,
             exit_code=EXIT_CODE_API,
             json_output=json_output,
-            details={"profile": selected_name, "account": account},
+            details={"profile": selected_name, "account": account, "order_ref_prefix": order_ref_prefix},
         )
         return
 
@@ -840,6 +879,7 @@ def execute_trade_command(
     trail_percent: Optional[float] = None,
     take_profit: Optional[float] = None,
     stop_loss: Optional[float] = None,
+    order_ref: Optional[str] = None,
 ) -> None:
     if preview == submit:
         exit_with_error(
@@ -870,6 +910,7 @@ def execute_trade_command(
             trail_percent=trail_percent,
             take_profit_price=take_profit,
             stop_loss_price=stop_loss,
+            order_ref=order_ref,
         )
         if preview:
             payload = preview_stock_order(selected_profile, **order_kwargs)
@@ -890,6 +931,7 @@ def execute_trade_command(
                 "quantity": quantity,
                 "order_type": order_type,
                 "account": account,
+                "order_ref": order_ref,
             },
         )
         return
@@ -925,6 +967,11 @@ def buy(
     stop_loss: Optional[float] = typer.Option(None, "--stop-loss", help="Stop-loss price (creates a bracket order)."),
     tif: str = typer.Option("DAY", "--tif", help="Time in force."),
     outside_rth: bool = typer.Option(False, "--outside-rth", help="Allow execution outside regular trading hours."),
+    order_ref: Optional[str] = typer.Option(
+        None,
+        "--order-ref",
+        help="IBKR orderRef — user tag associated with the order for its lifetime.",
+    ),
     preview: bool = typer.Option(False, "--preview", help="Run a what-if preview instead of placing an order."),
     submit: bool = typer.Option(False, "--submit", help="Place the order for real."),
     account: Optional[str] = typer.Option(None, "--account", help="IBKR account identifier."),
@@ -935,7 +982,7 @@ def buy(
         "BUY", symbol, quantity, profile, exchange, currency, order_type, limit_price,
         tif, outside_rth, preview, submit, account, timeout, json_output,
         stop_price=stop_price, trail_amount=trail_amount, trail_percent=trail_percent,
-        take_profit=take_profit, stop_loss=stop_loss,
+        take_profit=take_profit, stop_loss=stop_loss, order_ref=order_ref,
     )
 
 
@@ -955,6 +1002,11 @@ def sell(
     stop_loss: Optional[float] = typer.Option(None, "--stop-loss", help="Stop-loss price (creates a bracket order)."),
     tif: str = typer.Option("DAY", "--tif", help="Time in force."),
     outside_rth: bool = typer.Option(False, "--outside-rth", help="Allow execution outside regular trading hours."),
+    order_ref: Optional[str] = typer.Option(
+        None,
+        "--order-ref",
+        help="IBKR orderRef — user tag associated with the order for its lifetime.",
+    ),
     preview: bool = typer.Option(False, "--preview", help="Run a what-if preview instead of placing an order."),
     submit: bool = typer.Option(False, "--submit", help="Place the order for real."),
     account: Optional[str] = typer.Option(None, "--account", help="IBKR account identifier."),
@@ -965,7 +1017,7 @@ def sell(
         "SELL", symbol, quantity, profile, exchange, currency, order_type, limit_price,
         tif, outside_rth, preview, submit, account, timeout, json_output,
         stop_price=stop_price, trail_amount=trail_amount, trail_percent=trail_percent,
-        take_profit=take_profit, stop_loss=stop_loss,
+        take_profit=take_profit, stop_loss=stop_loss, order_ref=order_ref,
     )
 
 
